@@ -1,0 +1,75 @@
+# Local development stack: PostgreSQL plus the scheduler itself.
+#
+# Variables come from `.env` (copy `.env.example`), the single source of
+# truth shared by Compose and a host-run app. Bring everything up and wait
+# for readiness:
+#   docker compose up -d --build --wait
+#
+# To develop the app on the host instead, start only the database
+# (docker compose up -d postgres) and run `./mvnw spring-boot:run` with the
+# .env values exported.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: job-scheduler-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jobs}
+      POSTGRES_USER: ${POSTGRES_USER:-jobs_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - copy .env.example to .env}
+    ports:
+      - "${POSTGRES_PORT:-5440}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - scheduler
+    healthcheck:
+      # TCP rather than the unix socket: during initdb the bootstrap server
+      # listens on the socket only, so a socket probe reports "ready" early.
+      test:
+        - "CMD-SHELL"
+        - "pg_isready -h 127.0.0.1 -p 5432 -U ${POSTGRES_USER:-jobs_user} -d ${POSTGRES_DB:-jobs}"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  scheduler:
+    build: .
+    container_name: job-scheduler-app
+    restart: unless-stopped
+    environment:
+      # In-network address of the sibling container, not the published port.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-jobs}
+      POSTGRES_USER: ${POSTGRES_USER:-jobs_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - copy .env.example to .env}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - scheduler
+    healthcheck:
+      # The JRE image ships no curl/wget; bash's /dev/tcp is enough to ask
+      # the actuator whether the app (and its database connection) is UP.
+      test:
+        - "CMD"
+        - "bash"
+        - "-c"
+        - "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /actuator/health HTTP/1.0\r\n\r\n' >&3 && grep -q '\"status\":\"UP\"' <&3"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  postgres_data:
+
+networks:
+  scheduler:
+    name: job-scheduler-net
+    driver: bridge
