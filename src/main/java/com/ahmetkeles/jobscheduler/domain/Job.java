@@ -11,8 +11,10 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * A unit of work submitted through the API and executed by exactly one worker
- * at a time.
+ * A unit of work submitted through the API, with at most one current database
+ * claim at a time. Because execution is at-least-once, overlapping handler
+ * execution can occur after lease loss and recovery; stale completions are
+ * fenced on the claim's worker id and attempt number.
  *
  * <p>Concurrency control is row-level, not optimistic: every transition runs
  * under a database row lock. Workers claim PENDING jobs with
