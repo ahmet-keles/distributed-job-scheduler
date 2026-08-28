@@ -8,23 +8,27 @@ import java.net.UnknownHostException;
 import java.util.UUID;
 
 /**
- * Stable-for-the-process worker identity: hostname plus a random suffix, so
- * two workers on the same host (or a restarted process whose old leases are
- * still live) never share an id. Overridable via {@code app.worker.id} when a
- * deployment wants deterministic names.
+ * Lease-owner identity, unique per process <em>incarnation</em>: a
+ * human-readable prefix ({@code app.worker.id} if configured, else the
+ * hostname) plus a random suffix generated at construction. The suffix is
+ * not cosmetic — leases are owned by identity string, so a restarted process
+ * reusing a configured id verbatim could heartbeat and complete jobs still
+ * leased to its previous incarnation. With the suffix, the old incarnation's
+ * leases simply expire and the reaper reclaims them, which is the crash
+ * model working as designed.
  */
 @Component
 public class WorkerIdentity {
 
     private final String id;
 
-    public WorkerIdentity(@Value("${app.worker.id:}") String configuredId) {
-        if (configuredId != null && !configuredId.isBlank()) {
-            this.id = configuredId;
-            return;
-        }
+    public WorkerIdentity(@Value("${app.worker.id:}") String configuredPrefix) {
+        String prefix =
+                configuredPrefix == null || configuredPrefix.isBlank()
+                        ? hostname()
+                        : configuredPrefix;
 
-        this.id = hostname() + "-" + UUID.randomUUID().toString().substring(0, 8);
+        this.id = prefix + "-" + UUID.randomUUID().toString().substring(0, 8);
     }
 
     private static String hostname() {

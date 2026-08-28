@@ -64,7 +64,7 @@ class JobTest {
                 () -> job.startAttempt("worker-2", LEASE),
                 "a RUNNING job cannot be claimed again");
 
-        job.succeed("worker-1");
+        job.succeed("worker-1", 1);
 
         assertThrows(IllegalStateException.class,
                 () -> job.startAttempt("worker-2", LEASE),
@@ -76,7 +76,7 @@ class JobTest {
         Job job = newJob(3);
         job.startAttempt("worker-1", LEASE);
 
-        assertTrue(job.succeed("worker-1"));
+        assertTrue(job.succeed("worker-1", 1));
 
         assertEquals(JobStatus.SUCCEEDED, job.getStatus());
         assertNull(job.getWorkerId());
@@ -89,7 +89,7 @@ class JobTest {
         Job job = newJob(3);
         job.startAttempt("worker-1", LEASE);
 
-        assertFalse(job.succeed("worker-2"));
+        assertFalse(job.succeed("worker-2", 1));
 
         assertEquals(JobStatus.RUNNING, job.getStatus());
         assertEquals("worker-1", job.getWorkerId());
@@ -100,7 +100,7 @@ class JobTest {
         Job job = newJob(3);
         job.startAttempt("worker-1", LEASE);
 
-        assertTrue(job.fail("worker-1", "boom", RETRY_AT));
+        assertTrue(job.fail("worker-1", 1, "boom", RETRY_AT));
 
         assertEquals(JobStatus.PENDING, job.getStatus());
         assertEquals(RETRY_AT, job.getScheduledAt());
@@ -115,7 +115,7 @@ class JobTest {
         Job job = newJob(1);
         job.startAttempt("worker-1", LEASE);
 
-        assertTrue(job.fail("worker-1", "boom", RETRY_AT));
+        assertTrue(job.fail("worker-1", 1, "boom", RETRY_AT));
 
         assertEquals(JobStatus.FAILED, job.getStatus());
         assertEquals("boom", job.getLastError());
@@ -127,7 +127,7 @@ class JobTest {
         Job job = newJob(3);
         job.startAttempt("worker-1", LEASE);
 
-        assertFalse(job.fail("worker-2", "boom", RETRY_AT));
+        assertFalse(job.fail("worker-2", 1, "boom", RETRY_AT));
 
         assertEquals(JobStatus.RUNNING, job.getStatus());
         assertNull(job.getLastError());
@@ -169,16 +169,54 @@ class JobTest {
     }
 
     @Test
-    void extendLeaseOnlyMovesTheOwnersDeadline() {
+    void extendLeaseOnlyMovesTheOwnersLiveDeadline() {
         Job job = newJob(3);
         job.startAttempt("worker-1", LEASE);
 
         Instant later = LEASE.plus(30, ChronoUnit.SECONDS);
 
-        job.extendLease("worker-2", later);
+        job.extendLease("worker-2", NOW, later);
         assertEquals(LEASE, job.getLeaseExpiresAt(), "non-owner is a no-op");
 
-        job.extendLease("worker-1", later);
+        job.extendLease("worker-1", NOW, later);
         assertEquals(later, job.getLeaseExpiresAt());
+    }
+
+    @Test
+    void extendLeaseCannotResurrectAnExpiredLease() {
+        Job job = newJob(3);
+        job.startAttempt("worker-1", LEASE);
+
+        Instant afterExpiry = LEASE.plus(1, ChronoUnit.SECONDS);
+        Instant newDeadline = afterExpiry.plus(30, ChronoUnit.SECONDS);
+
+        job.extendLease("worker-1", afterExpiry, newDeadline);
+
+        assertEquals(LEASE, job.getLeaseExpiresAt(),
+                "an already-expired lease belongs to the reaper; a late "
+                        + "heartbeat must not revive it");
+    }
+
+    @Test
+    void completionIsFencedOnTheAttemptNumber() {
+        Job job = newJob(3);
+
+        // Attempt 1 is claimed, reaped, and the job re-claimed as attempt 2
+        // by the SAME worker (a second execution slot in the same process).
+        job.startAttempt("worker-1", LEASE);
+        job.expireLease("lease expired", NOW);
+        job.startAttempt("worker-1", LEASE);
+        assertEquals(2, job.getAttempts());
+
+        assertFalse(job.succeed("worker-1", 1),
+                "attempt 1's late success must not complete attempt 2");
+        assertFalse(job.fail("worker-1", 1, "late failure", RETRY_AT),
+                "attempt 1's late failure must not touch attempt 2");
+        assertEquals(JobStatus.RUNNING, job.getStatus());
+        assertEquals("worker-1", job.getWorkerId());
+
+        assertTrue(job.succeed("worker-1", 2),
+                "the current attempt completes normally");
+        assertEquals(JobStatus.SUCCEEDED, job.getStatus());
     }
 }

@@ -84,16 +84,22 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
 
     /**
      * Heartbeat: one statement extends the lease of every RUNNING job the
-     * worker holds. Filtering on {@code worker_id} makes it a no-op for jobs
-     * the reaper already reclaimed — their claim columns are cleared, so a
-     * zombie worker cannot resurrect a lease it lost.
+     * worker holds <em>whose lease is still live</em>. The
+     * {@code lease_expires_at > now} predicate is load-bearing: a lease that
+     * has already expired belongs to the reaper, and a late heartbeat must
+     * not resurrect it — otherwise a worker that paused past its deadline
+     * could yank a job back from crash recovery. Filtering on
+     * {@code worker_id} additionally makes reclaimed jobs (claim columns
+     * cleared) unreachable.
      */
     @Transactional(propagation = Propagation.MANDATORY)
     @Modifying
     @Query("""
             UPDATE Job j
             SET j.leaseExpiresAt = :newDeadline, j.updatedAt = :now
-            WHERE j.workerId = :workerId AND j.status = com.ahmetkeles.jobscheduler.domain.JobStatus.RUNNING
+            WHERE j.workerId = :workerId
+              AND j.status = com.ahmetkeles.jobscheduler.domain.JobStatus.RUNNING
+              AND j.leaseExpiresAt > :now
             """)
     int extendLeases(
             @Param("workerId") String workerId,

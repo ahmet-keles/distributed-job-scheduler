@@ -76,7 +76,9 @@ class JobWorkerEndToEndTest {
                 attemptRepository.findByJobIdOrderByAttemptNumberAsc(jobId);
         assertEquals(1, history.size());
         assertEquals(AttemptOutcome.SUCCEEDED, history.get(0).getOutcome());
-        assertEquals("e2e-worker", history.get(0).getWorkerId());
+        assertTrue(history.get(0).getWorkerId().startsWith("e2e-worker-"),
+                "the configured id is a prefix; the lease owner carries a "
+                        + "process-unique suffix");
     }
 
     @Test

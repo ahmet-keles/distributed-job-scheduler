@@ -120,13 +120,16 @@ public class Job {
     }
 
     /**
-     * Records a successful attempt by the given worker. Returns false without
-     * touching state when the claim is no longer this worker's — the lease
-     * expired and the reaper already reclaimed the job — so a zombie worker
-     * can never overwrite a state someone else now owns.
+     * Records a successful attempt. The attempt number is a fencing token:
+     * the transition applies only when the reporting worker still owns the
+     * claim AND the claim is still the same attempt. Without the attempt
+     * check, a worker whose attempt N was reaped and that then claimed
+     * attempt N+1 of the same job could have attempt N's late verdict
+     * complete attempt N+1. Returns false without touching state when the
+     * fence does not match.
      */
-    public boolean succeed(String completingWorkerId) {
-        if (!holdsClaim(completingWorkerId)) {
+    public boolean succeed(String completingWorkerId, int completedAttempt) {
+        if (!holdsClaim(completingWorkerId, completedAttempt)) {
             return false;
         }
 
@@ -136,13 +139,18 @@ public class Job {
     }
 
     /**
-     * Records a failed attempt by the given worker: back to PENDING at
-     * {@code nextRunAt} while attempts remain, terminal FAILED once they are
-     * exhausted. Returns false without touching state when the claim is no
-     * longer this worker's (see {@link #succeed}).
+     * Records a failed attempt: back to PENDING at {@code nextRunAt} while
+     * attempts remain, terminal FAILED once they are exhausted. Fenced on
+     * worker AND attempt number exactly like {@link #succeed}; a stale
+     * attempt's verdict changes nothing.
      */
-    public boolean fail(String failingWorkerId, String error, Instant nextRunAt) {
-        if (!holdsClaim(failingWorkerId)) {
+    public boolean fail(
+            String failingWorkerId,
+            int failedAttempt,
+            String error,
+            Instant nextRunAt
+    ) {
+        if (!holdsClaim(failingWorkerId, failedAttempt)) {
             return false;
         }
 
@@ -191,9 +199,18 @@ public class Job {
         updatedAt = Instant.now();
     }
 
-    /** Extends the lease; a no-op unless this worker still holds the claim. */
-    public void extendLease(String heartbeatingWorkerId, Instant newDeadline) {
-        if (!holdsClaim(heartbeatingWorkerId)) {
+    /**
+     * Extends the lease — a no-op unless this worker still holds the claim
+     * AND the lease is still live at {@code now}. An expired lease is the
+     * reaper's to reclaim; a late heartbeat must not resurrect it.
+     */
+    public void extendLease(
+            String heartbeatingWorkerId, Instant now, Instant newDeadline) {
+        if (!holdsClaim(heartbeatingWorkerId, attempts)) {
+            return;
+        }
+
+        if (!leaseExpiresAt.isAfter(now)) {
             return;
         }
 
@@ -201,10 +218,11 @@ public class Job {
         updatedAt = Instant.now();
     }
 
-    private boolean holdsClaim(String candidateWorkerId) {
+    private boolean holdsClaim(String candidateWorkerId, int candidateAttempt) {
         return status == JobStatus.RUNNING
                 && workerId != null
-                && workerId.equals(candidateWorkerId);
+                && workerId.equals(candidateWorkerId)
+                && attempts == candidateAttempt;
     }
 
     private void clearClaim() {

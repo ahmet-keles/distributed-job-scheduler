@@ -1,5 +1,6 @@
 package com.ahmetkeles.jobscheduler.worker;
 
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import org.hibernate.validator.constraints.time.DurationMin;
@@ -13,8 +14,10 @@ import java.time.Duration;
  * non-positive value refuses to boot: a zero lease would make every claim
  * instantly reapable, and a zero backoff would hot-loop failing jobs.
  *
- * <p>The safety relation the deployment must preserve:
- * {@code heartbeat-interval < lease-duration}. The margin between the two is
+ * <p>The safety relation {@code heartbeat-interval < lease-duration} is
+ * enforced here at startup: with the interval at or beyond the lease, every
+ * lease would expire before its first renewal and each running job would be
+ * reaped mid-execution as a matter of course. The margin between the two is
  * how many missed heartbeats a live worker survives before the reaper
  * reclaims — and possibly re-executes — its job.
  */
@@ -64,6 +67,14 @@ public class WorkerProperties {
     @NotNull
     @DurationMin(millis = 1)
     private Duration retryMaxBackoff = Duration.ofMinutes(5);
+
+    @AssertTrue(message = "heartbeat-interval-ms must be smaller than "
+            + "lease-duration: a lease must be renewable before it expires, "
+            + "or every running job is reaped mid-execution")
+    public boolean isHeartbeatIntervalInsideLease() {
+        return leaseDuration == null
+                || heartbeatIntervalMs < leaseDuration.toMillis();
+    }
 
     public long getPollIntervalMs() {
         return pollIntervalMs;

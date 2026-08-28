@@ -23,12 +23,15 @@ import java.util.UUID;
  * and the completion transaction, never inside either — a slow handler must
  * not pin row locks or a connection.
  *
- * <p>Completion is guarded by claim ownership: if the worker's lease expired
- * mid-execution and the reaper already reclaimed the job, the late completion
- * finds the claim gone and records nothing on the job (the attempt row keeps
- * its ABANDONED verdict). This is what bounds the blast radius of a paused or
- * partitioned worker to "the attempt is re-run", never "two owners write the
- * same job".
+ * <p>Completion is fenced on the claim's worker id AND attempt number: if
+ * the worker's lease expired mid-execution and the reaper already reclaimed
+ * the job, the late completion finds the fence mismatched and records nothing
+ * on the job (the attempt row keeps its ABANDONED verdict) — even when the
+ * same worker process has since claimed the job's next attempt. The fence
+ * bounds the blast radius of a paused or partitioned worker to "a stale
+ * verdict is discarded"; note that the handler itself may still have executed
+ * (possibly concurrently with the replacement attempt), which is why
+ * execution is at-least-once and handlers must be idempotent.
  */
 @Service
 public class JobClaimService {
@@ -89,7 +92,7 @@ public class JobClaimService {
     public void recordSuccess(String workerId, ClaimedJob claim) {
         Job job = jobRepository.findByIdForUpdate(claim.jobId()).orElseThrow();
 
-        if (!job.succeed(workerId)) {
+        if (!job.succeed(workerId, claim.attemptNumber())) {
             log.warn(
                     "Worker {} finished job {} attempt {} after losing the "
                             + "claim; result discarded, job stays {}",
@@ -113,7 +116,7 @@ public class JobClaimService {
         Instant nextRunAt = Instant.now()
                 .plus(retryPolicy.backoffAfter(claim.attemptNumber()));
 
-        if (!job.fail(workerId, error, nextRunAt)) {
+        if (!job.fail(workerId, claim.attemptNumber(), error, nextRunAt)) {
             log.warn(
                     "Worker {} failed job {} attempt {} after losing the "
                             + "claim; job stays {}",

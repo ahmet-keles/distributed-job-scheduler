@@ -143,6 +143,103 @@ class ExpiredLeaseReaperIntegrationTest extends PostgreSQLIntegrationTest {
                 "the abandoned attempt keeps its verdict");
     }
 
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
+    /** Test seam: collapses a backed-off PENDING job's delay to "due now". */
+    private void rescheduleNow(UUID jobId) {
+        int updated = jdbcTemplate.update(
+                "UPDATE jobs SET scheduled_at = now() "
+                        + "WHERE id = ? AND status = 'PENDING'",
+                jobId);
+        assertEquals(1, updated, "job must be PENDING to reschedule");
+    }
+
+    /**
+     * The attempt-fencing race from the review: the SAME worker process loses
+     * attempt 1 to the reaper, claims attempt 2 of the same job on another
+     * execution slot, and then attempt 1's verdict arrives late. Matching on
+     * worker id alone would let that stale verdict complete attempt 2; the
+     * attempt-number fence must discard it.
+     */
+    @Test
+    void aStaleAttemptsVerdictCannotCompleteTheCurrentAttempt()
+            throws Exception {
+        UUID jobId = jobService
+                .createJob("noop", "{}", null, null, 3).getId();
+
+        // Attempt 1: claimed by worker-a with an instantly-expired lease,
+        // then reaped back to PENDING with the attempt written off.
+        ClaimedJob staleClaim = claimWithExpiredLease("worker-a", jobId);
+        claimService.requeueExpiredLeases();
+        assertEquals(JobStatus.PENDING,
+                claimService.loadJob(jobId).getStatus());
+        assertEquals(AttemptOutcome.ABANDONED, attemptRepository
+                .findByJobIdAndAttemptNumber(jobId, 1).orElseThrow()
+                .getOutcome());
+
+        // Attempt 2: the retry becomes due and the SAME worker-a claims it.
+        rescheduleNow(jobId);
+        ClaimedJob currentClaim = claimService
+                .claimDueJobs("worker-a", 100).stream()
+                .filter(candidate -> candidate.jobId().equals(jobId))
+                .findFirst().orElseThrow();
+        assertEquals(2, currentClaim.attemptNumber());
+
+        // Attempt 1 finishes late — success AND failure must both bounce off
+        // the fence without touching job state or attempt history.
+        claimService.recordSuccess("worker-a", staleClaim);
+        Job afterStaleSuccess = claimService.loadJob(jobId);
+        assertEquals(JobStatus.RUNNING, afterStaleSuccess.getStatus(),
+                "attempt 2 must remain RUNNING after attempt 1's late success");
+        assertEquals(2, afterStaleSuccess.getAttempts());
+        assertEquals("worker-a", afterStaleSuccess.getWorkerId());
+
+        claimService.recordFailure("worker-a", staleClaim, "late failure");
+        assertEquals(JobStatus.RUNNING,
+                claimService.loadJob(jobId).getStatus(),
+                "attempt 2 must remain RUNNING after attempt 1's late failure");
+
+        assertEquals(AttemptOutcome.ABANDONED, attemptRepository
+                .findByJobIdAndAttemptNumber(jobId, 1).orElseThrow()
+                .getOutcome(), "attempt 1's history keeps the reaper's verdict");
+        assertTrue(attemptRepository
+                .findByJobIdAndAttemptNumber(jobId, 2).orElseThrow()
+                .isOpen(), "attempt 2's history row must stay open");
+
+        // The current attempt then completes normally.
+        claimService.recordSuccess("worker-a", currentClaim);
+        assertEquals(JobStatus.SUCCEEDED,
+                claimService.loadJob(jobId).getStatus());
+        assertEquals(AttemptOutcome.SUCCEEDED, attemptRepository
+                .findByJobIdAndAttemptNumber(jobId, 2).orElseThrow()
+                .getOutcome());
+    }
+
+    /**
+     * A heartbeat arriving after the lease deadline must not resurrect the
+     * lease: the job already belongs to crash recovery.
+     */
+    @Test
+    void aLateHeartbeatCannotResurrectAnExpiredLease() throws Exception {
+        UUID jobId = jobService
+                .createJob("noop", "{}", null, null, 3).getId();
+
+        claimWithExpiredLease("late-heartbeater", jobId);
+
+        assertEquals(0, claimService.heartbeat("late-heartbeater"),
+                "an expired lease must extend zero rows");
+
+        assertTrue(claimService.requeueExpiredLeases() >= 1,
+                "the reaper must still find the expired lease");
+        assertEquals(JobStatus.PENDING,
+                claimService.loadJob(jobId).getStatus(),
+                "the job must be reclaimed despite the late heartbeat");
+        assertEquals(AttemptOutcome.ABANDONED, attemptRepository
+                .findByJobIdAndAttemptNumber(jobId, 1).orElseThrow()
+                .getOutcome());
+    }
+
     @Test
     void heartbeatExtendsOnlyTheOwnersLiveLeases() {
         UUID jobId = jobService

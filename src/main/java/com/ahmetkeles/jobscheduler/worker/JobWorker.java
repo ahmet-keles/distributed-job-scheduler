@@ -19,10 +19,10 @@ import java.util.concurrent.TimeUnit;
 /**
  * The worker loop: poll, claim, execute, complete.
  *
- * <p>The poller claims at most as many jobs as it has free handler threads
- * (a semaphore tracks in-flight executions), so a full pool never claims work
- * it cannot start — claimed-but-queued jobs would burn lease time without
- * running. Execution happens on a dedicated pool, outside any transaction;
+ * <p>The poller claims at most {@code min(free handler threads, batch-size)}
+ * jobs per poll (a semaphore tracks in-flight executions), so a full pool
+ * never claims work it cannot start and one poll never exceeds the
+ * configured batch. Execution happens on a dedicated pool, outside any transaction;
  * completion and failure are recorded by {@link JobClaimService} in their own
  * short transactions.
  *
@@ -43,6 +43,7 @@ public class JobWorker {
     private final JobClaimService claimService;
     private final JobHandlerRegistry handlerRegistry;
     private final WorkerIdentity identity;
+    private final WorkerProperties properties;
     private final ExecutorService executionPool;
     private final Semaphore freeSlots;
 
@@ -55,6 +56,7 @@ public class JobWorker {
         this.claimService = claimService;
         this.handlerRegistry = handlerRegistry;
         this.identity = identity;
+        this.properties = properties;
         this.executionPool =
                 Executors.newFixedThreadPool(properties.getConcurrency());
         this.freeSlots = new Semaphore(properties.getConcurrency());
@@ -75,9 +77,14 @@ public class JobWorker {
             return;
         }
 
+        // One poll claims at most batch-size jobs, and never more than it
+        // has free handler threads for — claimed-but-queued jobs would burn
+        // lease time without running.
+        int claimTarget = Math.min(slots, properties.getBatchSize());
+
         List<ClaimedJob> claimed;
         try {
-            claimed = claimService.claimDueJobs(identity.id(), slots);
+            claimed = claimService.claimDueJobs(identity.id(), claimTarget);
         } catch (RuntimeException exception) {
             freeSlots.release(slots);
             log.error("Claim poll failed; will retry next interval", exception);

@@ -16,8 +16,10 @@ claiming, leases, retries, execution history, crash recovery.
 - **REST API** to create, inspect, list, and cancel jobs
 - **Immediate and delayed jobs** — run now, after a delay, or at an instant
 - **Competing workers**: any number of app instances poll for due jobs and
-  claim them with `SELECT … FOR UPDATE SKIP LOCKED`, so two workers can never
-  execute the same job concurrently and never block each other
+  claim them with `SELECT … FOR UPDATE SKIP LOCKED` — at most one claim is
+  current at any time, claimers never block each other, and stale completions
+  are fenced out (see the failure model for the one overlap the lease model
+  allows)
 - **Leases + heartbeats**: a claim is a lease, renewed while the worker is
   alive; a reaper returns expired leases to the queue, so a crashed or
   partitioned worker's jobs are re-executed instead of stuck
@@ -69,8 +71,9 @@ instance's reaper can recover any other instance's abandoned jobs.
    at `now + initial·multiplier^(n−1)` (capped) while attempts remain,
    terminal `FAILED` once exhausted.
 4. **Heartbeat** — while jobs run, the worker extends the lease of every
-   `RUNNING` row it owns in one UPDATE, on a schedule well inside the lease
-   duration.
+   `RUNNING` row it owns whose lease is still live, in one UPDATE, on a
+   schedule that startup validation forces to be shorter than the lease. An
+   already-expired lease is never extended — it belongs to the reaper.
 5. **Reap** — a sweeper on every instance locks `RUNNING` rows whose lease
    deadline passed, closes their open attempt as `ABANDONED`, and requeues or
    fails the job exactly like an ordinary failure.
@@ -94,7 +97,7 @@ Execution is **at-least-once**. The design makes every crash window explicit:
 | Worker crashes **before the claim commits** | Nothing happened: the job is still `PENDING`, the locks die with the connection. |
 | Worker crashes **after claiming, before/during execution** | The job stays `RUNNING` until its lease deadline passes; the reaper then closes the attempt as `ABANDONED` and requeues (or fails) it. The handler may or may not have run — this is the at-least-once window. |
 | Worker crashes **after execution, before recording the outcome** | Same as above: the verdict is lost, the lease expires, the job is re-executed. Handlers must be idempotent or tolerate duplicate execution. |
-| Worker is **paused/partitioned past its lease** (a "zombie") | The reaper reclaims the job. When the zombie wakes and reports its stale verdict, the ownership guard rejects it: completion is applied only if the reporting worker still holds the claim, so two owners can never write the same job. |
+| Worker is **paused/partitioned past its lease** (a "zombie") | The reaper reclaims the job; a late heartbeat cannot resurrect the expired lease. When the zombie wakes and reports its stale verdict, the fence rejects it: a completion is applied only when it matches both the claim's worker **and** its attempt number, so a stale attempt can never write the current one's state — even when the same worker process holds the replacement claim. Note the zombie's **handler may still be executing** while the replacement attempt runs: the database state has one owner, handler execution can overlap. |
 | Handler **throws** | The attempt is recorded `FAILED`; the job retries with exponential backoff until `max_attempts`, then goes terminal `FAILED` with the error preserved. |
 | **Cancel races a claim** | The two transactions serialize on the row lock. If cancel wins, the claim never sees the job; if the claim wins, cancel returns `409 Conflict` — a job is never yanked from under a running worker. |
 | **Database is down** | The API and workers fail their operations; nothing is lost or duplicated because every transition is a single ACID transaction. Work resumes when the database does. |
@@ -103,7 +106,17 @@ Two invariants carry all of this:
 
 1. Every state transition happens in one transaction over a row the
    transaction holds locked.
-2. A completion is valid only while its worker still owns the claim.
+2. A completion is applied only when it matches both the claim's worker id
+   and its current attempt number — the attempt number is a fencing token,
+   so a stale attempt has zero effect on job state or attempt history.
+
+What the invariants do **not** provide: exactly-once handler execution.
+`SKIP LOCKED` guarantees only one *claim* is current at a time, but after a
+lease is lost the old handler may still be running while the replacement
+attempt executes — duplicate and even overlapping handler execution is
+possible. Handlers that perform external side effects must be idempotent or
+carry their own fencing/idempotency mechanism (e.g. an idempotency key
+derived from the job id and attempt number).
 
 ## API
 
