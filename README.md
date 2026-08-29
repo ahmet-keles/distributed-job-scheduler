@@ -8,13 +8,19 @@ executed by competing worker processes that coordinate purely through
 database row locking — no message broker, no coordination service, and no
 single point of failure in the execution path.
 
-**Milestone 1** (this repository today): the durable core — API, persistence,
-claiming, leases, retries, execution history, crash recovery.
+**Milestone 1**: the durable core — API, persistence, claiming, leases,
+retries, execution history, crash recovery.
+**Milestone 2**: job priority and recurring cron schedules, built on the
+same coordination model — a schedule only materializes ordinary jobs.
 
 ## What it does
 
 - **REST API** to create, inspect, list, and cancel jobs
 - **Immediate and delayed jobs** — run now, after a delay, or at an instant
+- **Job priority** — higher-priority due jobs are claimed first; priority
+  never preempts a running job and never makes a future job due early
+- **Recurring schedules** — Spring 6-field cron, evaluated in UTC; every
+  occurrence is materialized as an ordinary, independently recorded job
 - **Competing workers**: any number of app instances poll for due jobs and
   claim them with `SELECT … FOR UPDATE SKIP LOCKED` — at most one claim is
   current at any time, claimers never block each other, and stale completions
@@ -37,14 +43,16 @@ flowchart LR
     Client([Client]) -->|REST /api/jobs| API
 
     subgraph app [Scheduler instance × N]
-        API[Job API]
+        API[Job + Schedule API]
+        Dispatcher[Schedule dispatcher]
         Poller[Worker poller]
         Pool[Handler pool]
         HB[Heartbeat]
         Reaper[Lease reaper]
     end
 
-    API -->|insert / cancel| DB[(PostgreSQL)]
+    API -->|insert / cancel / pause| DB[(PostgreSQL)]
+    Dispatcher -->|materialize due occurrences: SKIP LOCKED| DB
     Poller -->|claim: FOR UPDATE SKIP LOCKED| DB
     Poller --> Pool
     Pool -->|record outcome| DB
@@ -59,9 +67,11 @@ instance's reaper can recover any other instance's abandoned jobs.
 ### Execution model
 
 1. **Claim** — one short transaction locks up to N due `PENDING` rows
-   (`FOR UPDATE SKIP LOCKED`), flips each to `RUNNING` with the worker's id
-   and a lease deadline, and opens an attempt-history row. `SKIP LOCKED`
-   partitions due jobs between concurrent workers without blocking.
+   (`FOR UPDATE SKIP LOCKED`), **highest priority first, oldest first within
+   a priority**, flips each to `RUNNING` with the worker's id and a lease
+   deadline, and opens an attempt-history row. `SKIP LOCKED` partitions due
+   jobs between concurrent workers without blocking, exactly as before —
+   priority only changes the ORDER BY.
 2. **Execute** — the job's handler (resolved by `type`) runs on a dedicated
    thread pool, strictly outside any transaction, so slow work never pins
    locks or connections. The poller claims only as many jobs as it has free
@@ -82,11 +92,38 @@ instance's reaper can recover any other instance's abandoned jobs.
 
 | Table | Purpose |
 |---|---|
-| `jobs` | Current state: status, schedule, attempts/max, claim owner + lease, last error. CHECK constraints enforce the status/claim invariant at the schema level. |
+| `jobs` | Current state: status, schedule, priority, attempts/max, claim owner + lease, last error, and (for materialized firings) the source schedule + nominal occurrence. CHECK constraints enforce the status/claim invariant at the schema level. |
 | `job_attempts` | Append-only history: one row per started attempt with worker, timestamps, outcome (`SUCCEEDED`/`FAILED`/`ABANDONED`), and error. `UNIQUE (job_id, attempt_number)`. |
+| `schedules` | Recurring definitions: cron (UTC), job template (type, payload, priority, max attempts), enabled flag, and `next_run_at`. A schedule never executes anything itself. |
 
 Schema is managed by Flyway (`src/main/resources/db/migration`); Hibernate
 runs in `validate` mode only.
+
+### Recurring schedules
+
+A schedule is a template plus a UTC-evaluated Spring 6-field cron expression
+(`second minute hour day month weekday`). A dispatcher on every instance
+sweeps due schedules (locked with `SKIP LOCKED`, so concurrent dispatchers
+partition the work) and, per due schedule, **inserts exactly one ordinary
+job and advances `next_run_at` in the same transaction**. From that point
+the firing is indistinguishable from a directly-submitted job: it is
+claimed, leased, retried, cancelled, and recorded independently, and carries
+its source schedule and nominal occurrence (`scheduled_for`) for lineage. A
+unique `(schedule_id, scheduled_for)` index is the schema-level backstop
+against double-materialization.
+
+The deliberate semantics:
+
+- **Misfires collapse.** On firing, `next_run_at` advances to the first
+  occurrence strictly after *now*. Occurrences missed while no dispatcher
+  ran produce one catch-up firing, never a burst.
+- **Resume skips, never catches up.** Resuming a paused schedule recomputes
+  `next_run_at` from now; the paused period fires nothing.
+- **Overlap is allowed.** Firings are independent jobs; a slow execution
+  does not delay or block the next occurrence. Handlers are already required
+  to be idempotent under the at-least-once model.
+- **Pause stops future firings only.** Already-materialized pending jobs
+  remain individually cancellable through the job API.
 
 ## Failure model
 
@@ -136,6 +173,23 @@ curl -X POST localhost:8080/api/jobs \
   -H 'Content-Type: application/json' \
   -d '{"type": "always-fail", "maxAttempts": 5}'
 
+# Priority: higher runs first among due jobs (-100..100, default 0)
+curl -X POST localhost:8080/api/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "noop", "priority": 50}'
+
+# Recurring schedule: every day at 03:00 UTC (Spring 6-field cron)
+curl -X POST localhost:8080/api/schedules \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "nightly-cleanup", "type": "noop", "cron": "0 0 3 * * *",
+       "priority": 5, "maxAttempts": 2}'
+
+# Inspect a schedule (recent materialized jobs included), list, pause, resume
+curl localhost:8080/api/schedules/{id}
+curl 'localhost:8080/api/schedules?limit=20'
+curl -X POST localhost:8080/api/schedules/{id}/pause
+curl -X POST localhost:8080/api/schedules/{id}/resume
+
 # Inspect one job, attempt history included
 curl localhost:8080/api/jobs/{id}
 
@@ -176,15 +230,18 @@ in `application.properties`; every bound is validated at startup, and
 ## Tests
 
 ```bash
-./mvnw test        # 43 tests; Docker must be running
+./mvnw test        # 75 tests; Docker must be running
 ```
 
 - **Unit**: state-machine transitions, ownership guards, retry backoff
   arithmetic, handler registry.
 - **Integration (Testcontainers, real PostgreSQL)**: the API surface;
   claim semantics including two workers claiming concurrently with proven
-  disjoint results; retry-to-terminal with full history; lease expiry,
-  crash recovery, and the zombie-verdict guard; heartbeats.
+  disjoint results; priority ordering under concurrency; retry-to-terminal
+  with full history; lease expiry, crash recovery, and the stale-attempt
+  fence; heartbeats; schedule dispatch — exactly-once materialization under
+  concurrent dispatchers, misfire collapse, pause/resume, and the
+  double-materialization backstop.
 - **End-to-end**: the scheduled loop enabled for real — submit through the
   service, watch the poller claim, execute, retry, and complete.
 
@@ -200,14 +257,15 @@ src/main/java/com/ahmetkeles/jobscheduler/
 ├── domain/     Job + JobAttempt aggregates: every legal state transition
 ├── repository/ Spring Data JPA + the locking queries (SKIP LOCKED)
 ├── service/    API-facing operations (create/get/list/cancel)
-└── worker/     Claim service, poller, handler registry + built-ins,
-                heartbeat, lease reaper, retry policy
+└── worker/     Claim service, poller, schedule dispatcher, handler
+                registry + built-ins, heartbeat, lease reaper, retry policy
 ```
 
 ## Roadmap
 
-Deliberately **not** in milestone 1: recurring/cron schedules, job
-dependency graphs, priorities, a queue/broker (RabbitMQ), distributed
-caching (Redis), WebSocket progress streaming, richer observability, and
-cloud deployment. Each arrives in a later milestone on top of the durable
-core this milestone establishes.
+Delivered so far: the durable core (milestone 1), then priority and
+recurring cron schedules (milestone 2). Deliberately still out: job
+dependency graphs, a queue/broker (RabbitMQ), distributed caching (Redis),
+WebSocket progress streaming, dashboards, richer observability, and cloud
+deployment. Each arrives in a later milestone on top of the same durable
+core.

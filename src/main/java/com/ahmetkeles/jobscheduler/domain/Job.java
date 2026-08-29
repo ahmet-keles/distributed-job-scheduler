@@ -51,6 +51,24 @@ public class Job {
     @Column(name = "scheduled_at", nullable = false)
     private Instant scheduledAt;
 
+    /**
+     * Claim-order priority among <em>due</em> jobs: higher runs first. It
+     * never preempts a running job and never makes a future job due early.
+     */
+    @Column(nullable = false)
+    private int priority;
+
+    /** Recurring schedule this job was materialized from, if any. */
+    @Column(name = "schedule_id")
+    private UUID scheduleId;
+
+    /**
+     * The nominal cron occurrence this job represents; together with
+     * {@link #scheduleId} it uniquely identifies one firing.
+     */
+    @Column(name = "scheduled_for")
+    private Instant scheduledFor;
+
     /** Execution attempts started so far (claimed counts, even if abandoned). */
     @Column(nullable = false)
     private int attempts;
@@ -80,6 +98,16 @@ public class Job {
     }
 
     public Job(String type, String payload, Instant scheduledAt, int maxAttempts) {
+        this(type, payload, scheduledAt, maxAttempts, 0);
+    }
+
+    public Job(
+            String type,
+            String payload,
+            Instant scheduledAt,
+            int maxAttempts,
+            int priority
+    ) {
         if (type == null || type.isBlank()) {
             throw new IllegalArgumentException("type is required");
         }
@@ -97,10 +125,32 @@ public class Job {
         this.payload = payload == null || payload.isBlank() ? "{}" : payload;
         this.status = JobStatus.PENDING;
         this.scheduledAt = scheduledAt;
+        this.priority = priority;
         this.attempts = 0;
         this.maxAttempts = maxAttempts;
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
+    }
+
+    /**
+     * One firing of a recurring schedule, materialized as an ordinary job:
+     * it is claimed, leased, retried, cancelled, and recorded exactly like a
+     * directly-submitted job. {@code occurrence} is the nominal cron time
+     * this firing represents.
+     */
+    public static Job forSchedule(
+            String type,
+            String payload,
+            Instant occurrence,
+            int maxAttempts,
+            int priority,
+            UUID scheduleId,
+            Instant scheduledFor
+    ) {
+        Job job = new Job(type, payload, occurrence, maxAttempts, priority);
+        job.scheduleId = scheduleId;
+        job.scheduledFor = scheduledFor;
+        return job;
     }
 
     /**
@@ -257,6 +307,18 @@ public class Job {
 
     public Instant getScheduledAt() {
         return scheduledAt;
+    }
+
+    public int getPriority() {
+        return priority;
+    }
+
+    public UUID getScheduleId() {
+        return scheduleId;
+    }
+
+    public Instant getScheduledFor() {
+        return scheduledFor;
     }
 
     public int getAttempts() {

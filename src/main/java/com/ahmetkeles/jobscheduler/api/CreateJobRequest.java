@@ -29,7 +29,15 @@ public record CreateJobRequest(
 
         @Min(1)
         @Max(20)
-        Integer maxAttempts
+        Integer maxAttempts,
+
+        /**
+         * Claim-order priority among due jobs (higher first); default 0.
+         * Priority never preempts a running job.
+         */
+        @Min(-100)
+        @Max(100)
+        Integer priority
 ) {
 
     public boolean hasConflictingSchedule() {
