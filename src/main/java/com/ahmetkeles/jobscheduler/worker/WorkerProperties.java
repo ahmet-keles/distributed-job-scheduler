@@ -54,6 +54,14 @@ public class WorkerProperties {
     @Positive
     private int reaperBatchSize = 50;
 
+    /** How often due schedule occurrences are materialized into jobs. */
+    @Positive
+    private long scheduleDispatchIntervalMs = 1000;
+
+    /** Due schedules materialized per dispatch sweep. */
+    @Positive
+    private int scheduleDispatchBatchSize = 20;
+
     /** Delay before the first retry of a failed attempt. */
     @NotNull
     @DurationMin(millis = 1)
@@ -130,6 +138,22 @@ public class WorkerProperties {
 
     public void setReaperBatchSize(int reaperBatchSize) {
         this.reaperBatchSize = reaperBatchSize;
+    }
+
+    public long getScheduleDispatchIntervalMs() {
+        return scheduleDispatchIntervalMs;
+    }
+
+    public void setScheduleDispatchIntervalMs(long scheduleDispatchIntervalMs) {
+        this.scheduleDispatchIntervalMs = scheduleDispatchIntervalMs;
+    }
+
+    public int getScheduleDispatchBatchSize() {
+        return scheduleDispatchBatchSize;
+    }
+
+    public void setScheduleDispatchBatchSize(int scheduleDispatchBatchSize) {
+        this.scheduleDispatchBatchSize = scheduleDispatchBatchSize;
     }
 
     public Duration getRetryInitialBackoff() {

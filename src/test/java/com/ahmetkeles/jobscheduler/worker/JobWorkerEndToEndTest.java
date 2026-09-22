@@ -51,6 +51,7 @@ class JobWorkerEndToEndTest {
         registry.add("app.worker.reaper-interval-ms", () -> "200");
         registry.add("app.worker.retry-initial-backoff", () -> "100ms");
         registry.add("app.worker.retry-max-backoff", () -> "200ms");
+        registry.add("app.worker.schedule-dispatch-interval-ms", () -> "200");
     }
 
     @Autowired
@@ -111,6 +112,41 @@ class JobWorkerEndToEndTest {
 
         assertTrue(claimService.loadJob(jobId).getLastError()
                 .contains("no handler registered"));
+    }
+
+    @Autowired
+    private com.ahmetkeles.jobscheduler.service.ScheduleService scheduleService;
+
+    /**
+     * The full recurring loop: an every-second schedule is dispatched,
+     * claimed, and executed with no manual driving — each firing its own
+     * independently recorded job.
+     */
+    @Test
+    void aRecurringScheduleFiresIndependentJobsThroughTheRealLoop() {
+        com.ahmetkeles.jobscheduler.domain.Schedule schedule =
+                scheduleService.createSchedule(
+                        "every-second", "noop", "{}", "* * * * * *", 3, 1);
+
+        awaitTrue(
+                () -> scheduleService.recentJobs(schedule.getId(), 10).stream()
+                        .filter(job -> job.getStatus() == JobStatus.SUCCEEDED)
+                        .count() >= 2,
+                Duration.ofSeconds(20),
+                "at least two occurrences must fire and succeed");
+
+        scheduleService.pauseSchedule(schedule.getId());
+
+        List<Job> fired = scheduleService.recentJobs(schedule.getId(), 10);
+        long distinctOccurrences = fired.stream()
+                .map(Job::getScheduledFor).distinct().count();
+        assertEquals(fired.size(), distinctOccurrences,
+                "every firing carries a distinct nominal occurrence");
+        fired.forEach(job -> {
+            assertEquals(schedule.getId(), job.getScheduleId());
+            assertEquals(3, job.getPriority(),
+                    "materialized jobs inherit the schedule's priority");
+        });
     }
 
     @Test

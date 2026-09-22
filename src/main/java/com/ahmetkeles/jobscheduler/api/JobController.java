@@ -43,7 +43,8 @@ public class JobController {
                 request.payload(),
                 request.delaySeconds(),
                 request.scheduledAt(),
-                request.maxAttempts()
+                request.maxAttempts(),
+                request.priority()
         );
 
         return ResponseEntity

@@ -2,6 +2,7 @@ package com.ahmetkeles.jobscheduler.api;
 
 import com.ahmetkeles.jobscheduler.domain.JobNotCancellableException;
 import com.ahmetkeles.jobscheduler.domain.JobNotFoundException;
+import com.ahmetkeles.jobscheduler.domain.ScheduleNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -17,9 +18,12 @@ import java.util.stream.Collectors;
 @RestControllerAdvice
 public class RestExceptionHandler {
 
-    @ExceptionHandler(JobNotFoundException.class)
-    public ResponseEntity<ApiError> jobNotFound(
-            JobNotFoundException exception, HttpServletRequest request) {
+    @ExceptionHandler({
+            JobNotFoundException.class,
+            ScheduleNotFoundException.class
+    })
+    public ResponseEntity<ApiError> notFound(
+            RuntimeException exception, HttpServletRequest request) {
         return error(HttpStatus.NOT_FOUND, exception.getMessage(), request);
     }
 

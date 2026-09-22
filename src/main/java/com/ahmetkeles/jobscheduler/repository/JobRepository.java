@@ -31,7 +31,8 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
     Optional<Job> findByIdForUpdate(@Param("id") UUID id);
 
     /**
-     * Claims up to {@code batchSize} due PENDING jobs. {@code FOR UPDATE SKIP
+     * Claims up to {@code batchSize} due PENDING jobs, highest priority
+     * first, oldest schedule time within a priority. {@code FOR UPDATE SKIP
      * LOCKED} is the multi-worker guarantee: rows another claimer holds
      * locked are skipped rather than waited on, so concurrent workers claim
      * disjoint sets and never block each other. The row locks live for the
@@ -46,7 +47,7 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
                     FROM jobs
                     WHERE status = 'PENDING'
                       AND scheduled_at <= :now
-                    ORDER BY scheduled_at ASC, id ASC
+                    ORDER BY priority DESC, scheduled_at ASC, id ASC
                     LIMIT :batchSize
                     FOR UPDATE SKIP LOCKED
                     """,
@@ -108,6 +109,8 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
     );
 
     List<Job> findByStatusOrderByCreatedAtDesc(JobStatus status, Pageable pageable);
+
+    List<Job> findByScheduleIdOrderByCreatedAtDesc(UUID scheduleId, Pageable pageable);
 
     List<Job> findAllByOrderByCreatedAtDesc(Pageable pageable);
 }
