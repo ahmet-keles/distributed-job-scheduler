@@ -350,8 +350,9 @@ src/main/java/com/ahmetkeles/jobscheduler/
 ## Roadmap
 
 Delivered so far: the durable core (milestone 1), then priority and
-recurring cron schedules (milestone 2). Deliberately still out: job
-dependency graphs, a queue/broker (RabbitMQ), distributed caching (Redis),
-WebSocket progress streaming, dashboards, richer observability, and cloud
-deployment. Each arrives in a later milestone on top of the same durable
-core.
+recurring cron schedules (milestone 2). The repository includes a single-EC2
+AWS Terraform deployment template in [`deploy/aws`](deploy/aws/README.md).
+It is a small demo setup without high availability, automated database
+backups, or API authentication, and has not been applied to an AWS account.
+Deliberately still out: job dependency graphs, a queue/broker (RabbitMQ),
+distributed caching (Redis), dashboards, and richer observability.

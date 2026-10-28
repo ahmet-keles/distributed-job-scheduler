@@ -1,0 +1,23 @@
+#!/bin/bash
+set -euo pipefail
+
+dnf install -y docker curl git
+systemctl enable --now docker
+usermod -aG docker ec2-user
+
+# Install the official ARM64 Docker Compose v2 CLI plugin.
+install -d -m 0755 /usr/local/lib/docker/cli-plugins
+curl -fsSL \
+  https://github.com/docker/compose/releases/download/v2.39.4/docker-compose-linux-aarch64 \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+
+install -d -m 0755 /opt/job-scheduler
+git clone --depth 1 https://github.com/ahmet-keles/distributed-job-scheduler.git /opt/job-scheduler
+printf 'POSTGRES_DB=jobs\nPOSTGRES_USER=jobs_user\nPOSTGRES_PASSWORD=%s\n' \
+  "$(printf '%s' '${postgres_password_b64}' | base64 -d)" \
+  > /opt/job-scheduler/.env
+chmod 0600 /opt/job-scheduler/.env
+
+cd /opt/job-scheduler
+docker compose --env-file .env -f compose.yaml up -d --build --wait

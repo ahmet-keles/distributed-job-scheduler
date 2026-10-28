@@ -1,6 +1,13 @@
 .env
 .DS_Store
 
+# Terraform local state and variable files can contain sensitive values.
+deploy/aws/.terraform/
+deploy/aws/terraform.tfstate*
+deploy/aws/*.tfplan
+deploy/aws/terraform.tfvars
+deploy/aws/*.auto.tfvars
+
 # Maven build output
 target/
 
