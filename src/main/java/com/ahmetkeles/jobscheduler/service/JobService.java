@@ -119,6 +119,21 @@ public class JobService {
                 : jobRepository.findByStatusOrderByCreatedAtDesc(status, page);
     }
 
+    @Transactional(readOnly = true)
+    public List<Job> listDeadLetterJobs(int limit) {
+        return jobRepository.findByDeadLetteredAtIsNotNullOrderByDeadLetteredAtDesc(
+                PageRequest.of(0, limit));
+    }
+
+    /** Redrives a dead-lettered job with a fresh retry budget. */
+    @Transactional
+    public Job redriveJob(UUID jobId) {
+        Job job = jobRepository.findByIdForUpdate(jobId)
+                .orElseThrow(() -> new JobNotFoundException(jobId));
+        job.redrive(Instant.now());
+        return job;
+    }
+
     /**
      * Cancels a PENDING job. The row is locked first, so this serializes with
      * the workers' claim: whichever transaction wins, the loser sees the

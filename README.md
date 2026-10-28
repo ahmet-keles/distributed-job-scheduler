@@ -29,8 +29,9 @@ same coordination model — a schedule only materializes ordinary jobs.
 - **Leases + heartbeats**: a claim is a lease, renewed while the worker is
   alive; a reaper returns expired leases to the queue, so a crashed or
   partitioned worker's jobs are re-executed instead of stuck
-- **Bounded retries** with deterministic exponential backoff, ending in a
-  terminal `FAILED` state with the last error preserved
+- **Bounded retries** with deterministic exponential backoff; exhausted jobs
+  enter the dead-letter queue with the last error preserved and can be
+  redriven manually
 - **Per-job execution timeout** — optionally interrupt an overlong handler
   and record the attempt as failed through the standard retry policy
 - **Execution history**: one immutable attempt row per execution, including
@@ -81,7 +82,7 @@ instance's reaper can recover any other instance's abandoned jobs.
 3. **Complete** — a second short transaction re-locks the row and records
    `SUCCEEDED`, or `FAILED` with the retry policy applied: back to `PENDING`
    at `now + initial·multiplier^(n−1)` (capped) while attempts remain,
-   terminal `FAILED` once exhausted.
+   terminal `FAILED` once exhausted and marked for the dead-letter queue.
    An optional per-job `timeoutSeconds` interrupts an overlong handler and
    records a failed attempt through this same retry path. Handlers should
    respond to interruption; a handler that ignores it may continue running,
@@ -98,7 +99,7 @@ instance's reaper can recover any other instance's abandoned jobs.
 
 | Table | Purpose |
 |---|---|
-| `jobs` | Current state: status, schedule, priority, attempts/max, optional timeout, claim owner + lease, last error, and (for materialized firings) the source schedule + nominal occurrence. CHECK constraints enforce the status/claim invariant at the schema level. |
+| `jobs` | Current state: status, schedule, priority, attempts/max, optional timeout, claim owner + lease, last error, dead-letter timestamp, and (for materialized firings) the source schedule + nominal occurrence. CHECK constraints enforce the status/claim invariant at the schema level. |
 | `job_attempts` | Append-only history: one row per started attempt with worker, timestamps, outcome (`SUCCEEDED`/`FAILED`/`ABANDONED`), and error. `UNIQUE (job_id, attempt_number)`. |
 | `schedules` | Recurring definitions: cron (UTC), job template (type, payload, priority, max attempts), enabled flag, and `next_run_at`. A schedule never executes anything itself. |
 
@@ -138,10 +139,10 @@ Execution is **at-least-once**. The design makes every crash window explicit:
 | Failure | Outcome |
 |---|---|
 | Worker crashes **before the claim commits** | Nothing happened: the job is still `PENDING`, the locks die with the connection. |
-| Worker crashes **after claiming, before/during execution** | The job stays `RUNNING` until its lease deadline passes; the reaper then closes the attempt as `ABANDONED` and requeues (or fails) it. The handler may or may not have run — this is the at-least-once window. |
+| Worker crashes **after claiming, before/during execution** | The job stays `RUNNING` until its lease deadline passes; the reaper then closes the attempt as `ABANDONED` and requeues (or fails and dead-letters) it. The handler may or may not have run — this is the at-least-once window. |
 | Worker crashes **after execution, before recording the outcome** | Same as above: the verdict is lost, the lease expires, the job is re-executed. Handlers must be idempotent or tolerate duplicate execution. |
 | Worker is **paused/partitioned past its lease** (a "zombie") | The reaper reclaims the job; a late heartbeat cannot resurrect the expired lease. When the zombie wakes and reports its stale verdict, the fence rejects it: a completion is applied only when it matches both the claim's worker **and** its attempt number, so a stale attempt can never write the current one's state — even when the same worker process holds the replacement claim. Note the zombie's **handler may still be executing** while the replacement attempt runs: the database state has one owner, handler execution can overlap. |
-| Handler **throws** | The attempt is recorded `FAILED`; the job retries with exponential backoff until `max_attempts`, then goes terminal `FAILED` with the error preserved. |
+| Handler **throws** | The attempt is recorded `FAILED`; the job retries with exponential backoff until `max_attempts`, then goes terminal `FAILED` in the dead-letter queue with the error preserved. |
 | **Cancel races a claim** | The two transactions serialize on the row lock. If cancel wins, the claim never sees the job; if the claim wins, cancel returns `409 Conflict` — a job is never yanked from under a running worker. |
 | **Database is down** | The API and workers fail their operations; nothing is lost or duplicated because every transition is a single ACID transaction. Work resumes when the database does. |
 
@@ -207,9 +208,21 @@ curl localhost:8080/api/jobs/{id}
 # List, newest first; optional status filter and limit
 curl 'localhost:8080/api/jobs?status=FAILED&limit=20'
 
+# Inspect exhausted jobs waiting in the dead-letter queue
+curl 'localhost:8080/api/jobs/dead-letter?limit=50'
+
+# Redrive an exhausted job; attempt history and attempt numbers are preserved
+curl -X POST localhost:8080/api/jobs/{id}/redrive
+
 # Cancel a PENDING job (RUNNING or terminal -> 409, unknown -> 404)
 curl -X POST localhost:8080/api/jobs/{id}/cancel
 ```
+
+Redriving a dead-lettered job makes it due immediately and grants it a fresh
+retry budget equal to its configured `maxAttempts`. The overall attempt count
+and immutable attempt history remain monotonic; jobs that exhaust the new
+budget return to the dead-letter queue. A job outside that queue returns
+`409 Conflict` from the redrive endpoint.
 
 Built-in job types: `noop` (succeeds), `sleep` (`{"millis": n}`),
 `always-fail` (exercises the retry path). Add your own by implementing

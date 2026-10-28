@@ -92,6 +92,14 @@ public class Job {
     @Column(name = "last_error", columnDefinition = "text")
     private String lastError;
 
+    /** Non-null only while this exhausted job is waiting in the dead-letter queue. */
+    @Column(name = "dead_lettered_at")
+    private Instant deadLetteredAt;
+
+    /** Total attempts before the current retry budget began. */
+    @Column(name = "redrive_attempt_offset", nullable = false)
+    private int redriveAttemptOffset;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -249,8 +257,9 @@ public class Job {
     private void applyFailure(String error, Instant nextRunAt) {
         lastError = error;
 
-        if (attempts >= maxAttempts) {
+        if (attempts - redriveAttemptOffset >= maxAttempts) {
             status = JobStatus.FAILED;
+            deadLetteredAt = Instant.now();
             clearClaim();
             return;
         }
@@ -270,6 +279,22 @@ public class Job {
         }
 
         status = JobStatus.CANCELLED;
+        updatedAt = Instant.now();
+    }
+
+    /**
+     * Returns an exhausted job to the queue while keeping attempt numbers
+     * monotonic. A redrive starts a fresh budget of {@code maxAttempts} tries.
+     */
+    public void redrive(Instant now) {
+        if (status != JobStatus.FAILED || deadLetteredAt == null) {
+            throw new JobNotRedrivableException(id, status);
+        }
+
+        redriveAttemptOffset = attempts;
+        scheduledAt = now;
+        deadLetteredAt = null;
+        status = JobStatus.PENDING;
         updatedAt = Instant.now();
     }
 
@@ -365,6 +390,10 @@ public class Job {
 
     public String getLastError() {
         return lastError;
+    }
+
+    public Instant getDeadLetteredAt() {
+        return deadLetteredAt;
     }
 
     public Instant getCreatedAt() {

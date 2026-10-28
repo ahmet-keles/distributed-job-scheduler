@@ -109,8 +109,9 @@ class ExpiredLeaseReaperIntegrationTest extends PostgreSQLIntegrationTest {
 
         claimService.requeueExpiredLeases();
 
-        assertEquals(JobStatus.FAILED,
-                claimService.loadJob(jobId).getStatus());
+        Job failed = claimService.loadJob(jobId);
+        assertEquals(JobStatus.FAILED, failed.getStatus());
+        assertNotNull(failed.getDeadLetteredAt());
         assertEquals(AttemptOutcome.ABANDONED, attemptRepository
                 .findByJobIdAndAttemptNumber(jobId, 1).orElseThrow()
                 .getOutcome());

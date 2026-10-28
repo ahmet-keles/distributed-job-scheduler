@@ -19,6 +19,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -168,6 +169,47 @@ class JobApiIntegrationTest extends PostgreSQLIntegrationTest {
                 .andExpect(jsonPath("$.attemptHistory[0].outcome").value("FAILED"))
                 .andExpect(jsonPath("$.attemptHistory[0].workerId")
                         .value("api-test-worker"));
+    }
+
+    @Test
+    void deadLetterJobCanBeListedAndRedrivenWithFreshAttempts() throws Exception {
+        Job job = jobService.createJob("noop", "{}", null, null, 1);
+        ClaimedJob first = claimService.claimDueJobs("api-test-worker", 10).stream()
+                .filter(claim -> claim.jobId().equals(job.getId()))
+                .findFirst().orElseThrow();
+        claimService.recordFailure("api-test-worker", first, "initial failure");
+
+        mockMvc.perform(get("/api/jobs/dead-letter"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value(job.getId().toString()))
+                .andExpect(jsonPath("$[0].deadLetteredAt", notNullValue()));
+
+        mockMvc.perform(post("/api/jobs/" + job.getId() + "/redrive"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("PENDING"))
+                .andExpect(jsonPath("$.attempts").value(1))
+                .andExpect(jsonPath("$.deadLetteredAt").value(nullValue()));
+
+        ClaimedJob second = claimService.claimDueJobs("api-test-worker", 10).stream()
+                .filter(claim -> claim.jobId().equals(job.getId()))
+                .findFirst().orElseThrow();
+        assertEquals(2, second.attemptNumber());
+        claimService.recordFailure("api-test-worker", second, "redrive failure");
+
+        mockMvc.perform(get("/api/jobs/" + job.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("FAILED"))
+                .andExpect(jsonPath("$.attemptHistory", hasSize(2)))
+                .andExpect(jsonPath("$.attemptHistory[1].attemptNumber").value(2))
+                .andExpect(jsonPath("$.deadLetteredAt", notNullValue()));
+    }
+
+    @Test
+    void nonDeadLetterJobCannotBeRedriven() throws Exception {
+        Job job = jobService.createJob("noop", "{}", null, null, 1);
+
+        mockMvc.perform(post("/api/jobs/" + job.getId() + "/redrive"))
+                .andExpect(status().isConflict());
     }
 
     @Test

@@ -119,7 +119,37 @@ class JobTest {
 
         assertEquals(JobStatus.FAILED, job.getStatus());
         assertEquals("boom", job.getLastError());
+        assertTrue(job.getDeadLetteredAt() != null);
         assertTrue(job.isTerminal());
+    }
+
+    @Test
+    void redriveStartsANewRetryBudgetWithoutReusingAttemptNumbers() {
+        Job job = newJob(1);
+        job.startAttempt("worker-1", LEASE);
+        job.fail("worker-1", 1, "first run failed", RETRY_AT);
+
+        job.redrive(NOW);
+        assertEquals(JobStatus.PENDING, job.getStatus());
+        assertEquals(1, job.getAttempts());
+        assertNull(job.getDeadLetteredAt());
+
+        job.startAttempt("worker-2", LEASE);
+        assertEquals(2, job.getAttempts());
+        job.fail("worker-2", 2, "redrive failed", RETRY_AT);
+
+        assertEquals(JobStatus.FAILED, job.getStatus());
+        assertEquals(2, job.getAttempts());
+        assertEquals("redrive failed", job.getLastError());
+        assertTrue(job.getDeadLetteredAt() != null);
+    }
+
+    @Test
+    void redriveIsOnlyValidForAnExhaustedJob() {
+        Job pending = newJob(1);
+
+        assertThrows(JobNotRedrivableException.class,
+                () -> pending.redrive(NOW));
     }
 
     @Test
