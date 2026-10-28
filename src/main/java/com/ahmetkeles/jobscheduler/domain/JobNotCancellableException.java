@@ -3,8 +3,8 @@ package com.ahmetkeles.jobscheduler.domain;
 import java.util.UUID;
 
 /**
- * Only a PENDING job can be cancelled in this milestone: a RUNNING job is
- * already executing on a worker, and a terminal job has nothing to cancel.
+ * A pending job can be cancelled immediately and a running job can receive a
+ * cooperative cancellation request. Terminal jobs cannot be cancelled.
  */
 public class JobNotCancellableException extends RuntimeException {
 

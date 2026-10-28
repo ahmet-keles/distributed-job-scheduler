@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class JobWorker {
 
     private static final Logger log = LoggerFactory.getLogger(JobWorker.class);
+    private static final long CANCELLATION_POLL_INTERVAL_MS = 250;
 
     private final JobClaimService claimService;
     private final JobHandlerRegistry handlerRegistry;
@@ -140,6 +141,11 @@ public class JobWorker {
                         recordFailure(claim, error);
                     }
                 }, claim.timeoutSeconds(), TimeUnit.SECONDS);
+        ScheduledFuture<?> cancellationTask = timeoutScheduler.scheduleWithFixedDelay(
+                () -> pollCancellation(claim, handlerThread, outcomeRecorded),
+                0,
+                CANCELLATION_POLL_INTERVAL_MS,
+                TimeUnit.MILLISECONDS);
 
         try {
             if (outcomeRecorded.get()) {
@@ -178,10 +184,32 @@ public class JobWorker {
             if (timeoutTask != null) {
                 timeoutTask.cancel(false);
             }
-            // An interrupt used to stop a timed-out handler must not leak into
-            // the next task that reuses this pool thread.
+            cancellationTask.cancel(false);
+            // An interrupt used to stop a cancelled or timed-out handler must
+            // not leak into the next task that reuses this pool thread.
             Thread.interrupted();
             freeSlots.release();
+        }
+    }
+
+    private void pollCancellation(
+            ClaimedJob claim,
+            Thread handlerThread,
+            AtomicBoolean outcomeRecorded
+    ) {
+        if (outcomeRecorded.get()) {
+            return;
+        }
+
+        try {
+            if (claimService.isCancellationRequested(claim)
+                    && outcomeRecorded.compareAndSet(false, true)) {
+                handlerThread.interrupt();
+                claimService.recordCancellation(identity.id(), claim);
+            }
+        } catch (RuntimeException exception) {
+            log.warn("Could not check cancellation request for job {} attempt {}",
+                    claim.jobId(), claim.attemptNumber(), exception);
         }
     }
 

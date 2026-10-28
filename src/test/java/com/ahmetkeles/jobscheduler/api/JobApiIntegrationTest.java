@@ -213,6 +213,33 @@ class JobApiIntegrationTest extends PostgreSQLIntegrationTest {
     }
 
     @Test
+    void runningCancellationIsPersistedAndRecordedOnTheAttempt() throws Exception {
+        Job job = jobService.createJob("noop", "{}", null, null, 3);
+        ClaimedJob claim = claimService.claimDueJobs("api-test-worker", 10).stream()
+                .filter(candidate -> candidate.jobId().equals(job.getId()))
+                .findFirst().orElseThrow();
+
+        mockMvc.perform(post("/api/jobs/" + job.getId() + "/cancel"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RUNNING"))
+                .andExpect(jsonPath("$.cancelRequested").value(true));
+
+        org.junit.jupiter.api.Assertions.assertTrue(
+                claimService.isCancellationRequested(claim));
+        claimService.recordCancellation("api-test-worker", claim);
+
+        mockMvc.perform(get("/api/jobs/" + job.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.cancelRequested").value(false))
+                .andExpect(jsonPath("$.attemptHistory[0].outcome")
+                        .value("CANCELLED"));
+
+        mockMvc.perform(post("/api/jobs/" + job.getId() + "/cancel"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
     void unknownJobIs404() throws Exception {
         mockMvc.perform(get("/api/jobs/" + UUID.randomUUID()))
                 .andExpect(status().isNotFound());
@@ -240,14 +267,19 @@ class JobApiIntegrationTest extends PostgreSQLIntegrationTest {
     }
 
     @Test
-    void aRunningJobCannotBeCancelled() throws Exception {
+    void aRunningJobReceivesACancellationRequest() throws Exception {
         Job job = jobService.createJob("noop", "{}", null, null, null);
 
-        claimService.claimDueJobs("api-test-worker", 50);
+        ClaimedJob claim = claimService.claimDueJobs("api-test-worker", 50).stream()
+                .filter(candidate -> candidate.jobId().equals(job.getId()))
+                .findFirst().orElseThrow();
 
         mockMvc.perform(post("/api/jobs/" + job.getId() + "/cancel"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message", containsString("RUNNING")));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RUNNING"))
+                .andExpect(jsonPath("$.cancelRequested").value(true));
+
+        claimService.recordCancellation("api-test-worker", claim);
     }
 
     @Test

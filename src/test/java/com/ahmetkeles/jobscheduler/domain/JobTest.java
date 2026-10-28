@@ -183,7 +183,7 @@ class JobTest {
     }
 
     @Test
-    void cancelIsOnlyValidWhilePending() {
+    void pendingCancellationIsImmediateAndRunningCancellationIsRequested() {
         Job job = newJob(3);
         job.cancel();
         assertEquals(JobStatus.CANCELLED, job.getStatus());
@@ -194,8 +194,14 @@ class JobTest {
 
         Job running = newJob(3);
         running.startAttempt("worker-1", LEASE);
-        assertThrows(JobNotCancellableException.class, running::cancel,
-                "a RUNNING job cannot be cancelled in this milestone");
+        running.cancel();
+        assertEquals(JobStatus.RUNNING, running.getStatus(),
+                "the worker still owns the running attempt until it stops");
+        assertTrue(running.isCancelRequested());
+        assertTrue(running.cancelRunningAttempt("worker-1", 1));
+        assertEquals(JobStatus.CANCELLED, running.getStatus());
+        assertFalse(running.isCancelRequested());
+        assertNull(running.getWorkerId());
     }
 
     @Test

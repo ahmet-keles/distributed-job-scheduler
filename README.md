@@ -15,7 +15,7 @@ same coordination model — a schedule only materializes ordinary jobs.
 
 ## What it does
 
-- **REST API** to create, inspect, list, and cancel jobs
+- **REST API** to create, inspect, list, cancel, and redrive jobs
 - **Immediate and delayed jobs** — run now, after a delay, or at an instant
 - **Job priority** — higher-priority due jobs are claimed first; priority
   never preempts a running job and never makes a future job due early
@@ -35,9 +35,10 @@ same coordination model — a schedule only materializes ordinary jobs.
 - **Per-job execution timeout** — optionally interrupt an overlong handler
   and record the attempt as failed through the standard retry policy
 - **Execution history**: one immutable attempt row per execution, including
-  attempts written off as `ABANDONED` by crash recovery
+  attempts written off as `ABANDONED` by crash recovery and `CANCELLED` by
+  a user request
 - **Job states**: `PENDING → RUNNING → SUCCEEDED | FAILED`, plus `CANCELLED`
-  for jobs cancelled before a worker picked them up
+  for pending jobs cancelled immediately or running jobs stopped cooperatively
 
 ## Architecture
 
@@ -99,8 +100,8 @@ instance's reaper can recover any other instance's abandoned jobs.
 
 | Table | Purpose |
 |---|---|
-| `jobs` | Current state: status, schedule, priority, attempts/max, optional timeout, claim owner + lease, last error, dead-letter timestamp, and (for materialized firings) the source schedule + nominal occurrence. CHECK constraints enforce the status/claim invariant at the schema level. |
-| `job_attempts` | Append-only history: one row per started attempt with worker, timestamps, outcome (`SUCCEEDED`/`FAILED`/`ABANDONED`), and error. `UNIQUE (job_id, attempt_number)`. |
+| `jobs` | Current state: status, schedule, priority, attempts/max, optional timeout, claim owner + lease, cancellation request, last error, dead-letter timestamp, and (for materialized firings) the source schedule + nominal occurrence. CHECK constraints enforce the status/claim invariant at the schema level. |
+| `job_attempts` | Append-only history: one row per started attempt with worker, timestamps, outcome (`SUCCEEDED`/`FAILED`/`ABANDONED`/`CANCELLED`), and error. `UNIQUE (job_id, attempt_number)`. |
 | `schedules` | Recurring definitions: cron (UTC), job template (type, payload, priority, max attempts), enabled flag, and `next_run_at`. A schedule never executes anything itself. |
 
 Schema is managed by Flyway (`src/main/resources/db/migration`); Hibernate
@@ -143,7 +144,8 @@ Execution is **at-least-once**. The design makes every crash window explicit:
 | Worker crashes **after execution, before recording the outcome** | Same as above: the verdict is lost, the lease expires, the job is re-executed. Handlers must be idempotent or tolerate duplicate execution. |
 | Worker is **paused/partitioned past its lease** (a "zombie") | The reaper reclaims the job; a late heartbeat cannot resurrect the expired lease. When the zombie wakes and reports its stale verdict, the fence rejects it: a completion is applied only when it matches both the claim's worker **and** its attempt number, so a stale attempt can never write the current one's state — even when the same worker process holds the replacement claim. Note the zombie's **handler may still be executing** while the replacement attempt runs: the database state has one owner, handler execution can overlap. |
 | Handler **throws** | The attempt is recorded `FAILED`; the job retries with exponential backoff until `max_attempts`, then goes terminal `FAILED` in the dead-letter queue with the error preserved. |
-| **Cancel races a claim** | The two transactions serialize on the row lock. If cancel wins, the claim never sees the job; if the claim wins, cancel returns `409 Conflict` — a job is never yanked from under a running worker. |
+| **Cancel races a claim** | The transactions serialize on the row lock. If cancel wins, the claim never sees the job; if claim wins, cancel records a request that the worker handles cooperatively. |
+| **Cancel a running job** | The API sets a durable request. The owning worker polls it, interrupts the handler, and closes the attempt as `CANCELLED`; handlers should respond to interruption. If the worker lease expires first, the reaper records the attempt as cancelled. |
 | **Database is down** | The API and workers fail their operations; nothing is lost or duplicated because every transition is a single ACID transaction. Work resumes when the database does. |
 
 Two invariants carry all of this:
@@ -214,7 +216,9 @@ curl 'localhost:8080/api/jobs/dead-letter?limit=50'
 # Redrive an exhausted job; attempt history and attempt numbers are preserved
 curl -X POST localhost:8080/api/jobs/{id}/redrive
 
-# Cancel a PENDING job (RUNNING or terminal -> 409, unknown -> 404)
+# Cancel a PENDING job immediately, or request cancellation of a RUNNING job.
+# A running response stays RUNNING with cancelRequested=true until the worker
+# stops the handler and records the attempt as CANCELLED. Terminal -> 409.
 curl -X POST localhost:8080/api/jobs/{id}/cancel
 ```
 

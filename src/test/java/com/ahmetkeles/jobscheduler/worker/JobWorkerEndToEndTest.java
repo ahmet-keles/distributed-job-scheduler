@@ -129,6 +129,27 @@ class JobWorkerEndToEndTest {
     }
 
     @Test
+    void cancellingARunningJobInterruptsItsHandlerAndRecordsCancelled() {
+        UUID jobId = jobService.createJob(
+                "sleep", "{\"millis\": 30000}", null, null, 3
+        ).getId();
+
+        awaitTrue(
+                () -> claimService.loadJob(jobId).getStatus() == JobStatus.RUNNING,
+                Duration.ofSeconds(5),
+                "the worker should claim the long-running job");
+
+        jobService.cancelJob(jobId);
+
+        awaitStatus(jobId, JobStatus.CANCELLED);
+        List<JobAttempt> history =
+                attemptRepository.findByJobIdOrderByAttemptNumberAsc(jobId);
+        assertEquals(1, history.size());
+        assertEquals(AttemptOutcome.CANCELLED, history.get(0).getOutcome());
+        assertEquals("cancelled by request", history.get(0).getError());
+    }
+
+    @Test
     void aFailingJobIsRetriedAndEndsUpFailedWithFullHistory() {
         UUID jobId = jobService.createJob(
                 "always-fail",

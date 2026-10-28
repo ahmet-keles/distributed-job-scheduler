@@ -3,6 +3,7 @@ package com.ahmetkeles.jobscheduler.worker;
 import com.ahmetkeles.jobscheduler.domain.AttemptOutcome;
 import com.ahmetkeles.jobscheduler.domain.Job;
 import com.ahmetkeles.jobscheduler.domain.JobAttempt;
+import com.ahmetkeles.jobscheduler.domain.JobStatus;
 import com.ahmetkeles.jobscheduler.repository.JobAttemptRepository;
 import com.ahmetkeles.jobscheduler.repository.JobRepository;
 import org.slf4j.Logger;
@@ -13,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -93,6 +95,14 @@ public class JobClaimService {
     public void recordSuccess(String workerId, ClaimedJob claim) {
         Job job = jobRepository.findByIdForUpdate(claim.jobId()).orElseThrow();
 
+        if (job.isCancelRequested()) {
+            if (job.cancelRunningAttempt(workerId, claim.attemptNumber())) {
+                closeAttempt(claim, AttemptOutcome.CANCELLED,
+                        "cancelled by request");
+            }
+            return;
+        }
+
         if (!job.succeed(workerId, claim.attemptNumber())) {
             log.warn(
                     "Worker {} finished job {} attempt {} after losing the "
@@ -114,6 +124,14 @@ public class JobClaimService {
     public void recordFailure(String workerId, ClaimedJob claim, String error) {
         Job job = jobRepository.findByIdForUpdate(claim.jobId()).orElseThrow();
 
+        if (job.isCancelRequested()) {
+            if (job.cancelRunningAttempt(workerId, claim.attemptNumber())) {
+                closeAttempt(claim, AttemptOutcome.CANCELLED,
+                        "cancelled by request");
+            }
+            return;
+        }
+
         Instant nextRunAt = Instant.now()
                 .plus(retryPolicy.backoffAfter(claim.attemptNumber()));
 
@@ -127,6 +145,23 @@ public class JobClaimService {
         }
 
         closeAttempt(claim, AttemptOutcome.FAILED, error);
+    }
+
+    /** Records cancellation after the worker observes the durable request. */
+    @Transactional
+    public void recordCancellation(String workerId, ClaimedJob claim) {
+        Job job = jobRepository.findByIdForUpdate(claim.jobId()).orElseThrow();
+        if (job.cancelRunningAttempt(workerId, claim.attemptNumber())) {
+            closeAttempt(claim, AttemptOutcome.CANCELLED,
+                    "cancelled by request");
+        }
+    }
+
+    /** Read seam polled by the active worker while its handler runs. */
+    @Transactional(readOnly = true)
+    public boolean isCancellationRequested(ClaimedJob claim) {
+        return jobRepository.existsByIdAndStatusAndAttemptsAndCancelRequestedTrue(
+                claim.jobId(), JobStatus.RUNNING, claim.attemptNumber());
     }
 
     /**
@@ -148,11 +183,19 @@ public class JobClaimService {
             String error = "lease expired: worker " + job.getWorkerId()
                     + " stopped heartbeating";
 
-            jobAttemptRepository
+            Optional<JobAttempt> openAttempt = jobAttemptRepository
                     .findByJobIdAndAttemptNumber(job.getId(), job.getAttempts())
-                    .filter(JobAttempt::isOpen)
-                    .ifPresent(attempt ->
-                            attempt.finish(AttemptOutcome.ABANDONED, error));
+                    .filter(JobAttempt::isOpen);
+
+            if (job.isCancelRequested()) {
+                openAttempt.ifPresent(attempt -> attempt.finish(
+                        AttemptOutcome.CANCELLED, "cancelled by request"));
+                job.cancelExpiredAttempt();
+                continue;
+            }
+
+            openAttempt.ifPresent(attempt ->
+                    attempt.finish(AttemptOutcome.ABANDONED, error));
 
             Instant nextRunAt =
                     now.plus(retryPolicy.backoffAfter(job.getAttempts()));
