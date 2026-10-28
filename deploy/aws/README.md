@@ -4,8 +4,9 @@ This Terraform template provisions one `t4g.small` (ARM64) EC2 instance in
 `us-east-1`, using the account's default VPC and one of its subnets. Amazon
 Linux 2023 installs Docker and Docker Compose, then starts this repository's
 `compose.yaml` (scheduler and PostgreSQL). It creates one security group:
-SSH is limited to `my_ip`, and the unauthenticated HTTP API is open on port
-8080. There is no RDS, load balancer, NAT gateway, high availability, or
+SSH is limited to `my_ip`, and API port 8080 defaults to the same `my_ip/32`
+CIDR. The optional `api_allowed_cidr` variable can allow another IPv4 CIDR.
+There is no RDS, load balancer, NAT gateway, high availability, or
 automated database backup. Use it for a small demo, not production workloads.
 
 ## Prerequisites
@@ -39,9 +40,30 @@ example, generate a hexadecimal value with `openssl rand -hex 24`). The tfvars
 file and Terraform state contain the database password and must stay private.
 They are git-ignored.
 The password is also passed through EC2 user data to initialize Compose; AWS
-principals allowed to read instance user data can see it. The security group
-exposes the API without authentication, so use only for a trusted demo and
-destroy it when finished.
+principals allowed to read instance user data can see it. The API has no
+authentication; the default CIDR restriction limits who can reach it. Use the
+temporary public override only as described below, and destroy the deployment
+when finished.
+
+### Temporarily open the API for a demo
+
+The API has no authentication. Keep the default `my_ip/32` restriction for
+normal use. If a demo needs public access, temporarily add this line to your
+local `terraform.tfvars`, then review and apply the security-group change:
+
+```hcl
+api_allowed_cidr = "0.0.0.0/0"
+```
+
+```sh
+terraform plan -var-file=terraform.tfvars
+terraform apply -var-file=terraform.tfvars
+```
+
+This allows anyone on the internet to reach the API while it is set. As soon
+as the demo ends, remove the `api_allowed_cidr` line (or replace it with a
+narrower IPv4 CIDR), then run the same `plan` and `apply` commands to restore
+the default restriction. Do not leave public access enabled.
 
 ## Initialize, plan, apply, destroy
 

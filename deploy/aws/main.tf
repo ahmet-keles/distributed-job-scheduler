@@ -13,9 +13,13 @@ data "aws_subnets" "default" {
   }
 }
 
+locals {
+  api_allowed_cidr = var.api_allowed_cidr == null ? "${var.my_ip}/32" : var.api_allowed_cidr
+}
+
 resource "aws_security_group" "scheduler" {
   name_prefix = "job-scheduler-"
-  description = "SSH restricted to my_ip; scheduler API open on port 8080."
+  description = "SSH and scheduler API access restricted by configured IPv4 CIDRs."
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
@@ -31,7 +35,7 @@ resource "aws_security_group" "scheduler" {
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [local.api_allowed_cidr]
   }
 
   egress {

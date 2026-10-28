@@ -14,6 +14,18 @@ variable "my_ip" {
   }
 }
 
+variable "api_allowed_cidr" {
+  description = "Optional IPv4 CIDR allowed to reach the API; defaults to my_ip/32."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.api_allowed_cidr == null ? true : can(cidrnetmask(var.api_allowed_cidr))
+    error_message = "api_allowed_cidr must be a valid IPv4 CIDR, such as 203.0.113.0/24."
+  }
+}
+
 variable "postgres_password" {
   description = "Password for the PostgreSQL application user. Keep the local tfvars and state private."
   type        = string

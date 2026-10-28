@@ -4,7 +4,7 @@
 2. It reads the current Amazon Linux 2023 ARM64 AMI ID from the public SSM parameter.
 3. The instance type is one `t4g.small`, with a 20 GB encrypted gp3 root disk.
 4. One security group allows SSH from the configured `my_ip` only.
-5. That security group exposes the scheduler API on port 8080.
+5. The API on port 8080 defaults to `my_ip/32`; an optional IPv4 CIDR variable can override it.
 6. The instance receives a public IPv4 address; there is no NAT, RDS, or load balancer.
 7. User data installs Docker and the ARM64 Docker Compose plugin.
 8. User data clones the public repository and starts its existing `compose.yaml`.
@@ -20,4 +20,4 @@
 
 **How is SSH access limited?** The security group allows TCP port 22 only from the IPv4 CIDR formed from `my_ip`.
 
-**What happens to the database when the instance stops or is destroyed?** Stop/start preserves the attached EBS volume; Terraform destroy deletes the instance and its root volume, so data must be backed up first.
+**How can a demo temporarily allow outside API access?** Set `api_allowed_cidr` to `0.0.0.0/0`, apply the security-group update, then remove the override and apply again immediately after the demo.
