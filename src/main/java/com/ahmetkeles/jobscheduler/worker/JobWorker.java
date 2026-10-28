@@ -13,8 +13,11 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * The worker loop: poll, claim, execute, complete.
@@ -46,6 +49,7 @@ public class JobWorker {
     private final WorkerProperties properties;
     private final ExecutorService executionPool;
     private final Semaphore freeSlots;
+    private final ScheduledExecutorService timeoutScheduler;
 
     public JobWorker(
             JobClaimService claimService,
@@ -57,6 +61,12 @@ public class JobWorker {
         this.handlerRegistry = handlerRegistry;
         this.identity = identity;
         this.properties = properties;
+        this.timeoutScheduler = Executors.newScheduledThreadPool(
+                properties.getConcurrency(), runnable -> {
+                    Thread thread = new Thread(runnable, "job-timeout-recorder");
+                    thread.setDaemon(true);
+                    return thread;
+                });
         this.executionPool =
                 Executors.newFixedThreadPool(properties.getConcurrency());
         this.freeSlots = new Semaphore(properties.getConcurrency());
@@ -109,35 +119,53 @@ public class JobWorker {
     }
 
     private void execute(ClaimedJob claim) {
-        try {
-            Optional<JobHandler> handler = handlerRegistry.find(claim.type());
+        Optional<JobHandler> handler = handlerRegistry.find(claim.type());
 
-            if (handler.isEmpty()) {
-                claimService.recordFailure(
-                        identity.id(),
-                        claim,
-                        "no handler registered for job type '"
-                                + claim.type() + "'");
+        if (handler.isEmpty()) {
+            recordFailure(claim, "no handler registered for job type '"
+                    + claim.type() + "'");
+            freeSlots.release();
+            return;
+        }
+
+        AtomicBoolean outcomeRecorded = new AtomicBoolean();
+        Thread handlerThread = Thread.currentThread();
+        ScheduledFuture<?> timeoutTask = claim.timeoutSeconds() == null
+                ? null
+                : timeoutScheduler.schedule(() -> {
+                    String error = "execution timed out after "
+                            + claim.timeoutSeconds() + " seconds";
+                    if (outcomeRecorded.compareAndSet(false, true)) {
+                        handlerThread.interrupt();
+                        recordFailure(claim, error);
+                    }
+                }, claim.timeoutSeconds(), TimeUnit.SECONDS);
+
+        try {
+            if (outcomeRecorded.get()) {
                 return;
             }
 
             try {
                 handler.get().execute(claim.payload());
             } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                claimService.recordFailure(
-                        identity.id(), claim, "execution interrupted");
+                if (outcomeRecorded.compareAndSet(false, true)) {
+                    recordFailure(claim, "execution interrupted");
+                }
                 return;
             } catch (Exception exception) {
                 log.warn(
                         "Job {} attempt {} failed",
                         claim.jobId(), claim.attemptNumber(), exception);
-                claimService.recordFailure(
-                        identity.id(), claim, errorMessage(exception));
+                if (outcomeRecorded.compareAndSet(false, true)) {
+                    recordFailure(claim, errorMessage(exception));
+                }
                 return;
             }
 
-            claimService.recordSuccess(identity.id(), claim);
+            if (outcomeRecorded.compareAndSet(false, true)) {
+                claimService.recordSuccess(identity.id(), claim);
+            }
         } catch (RuntimeException recordingFailure) {
             // The completion transaction itself failed. The job stays RUNNING
             // until its lease expires, at which point the reaper retries or
@@ -147,7 +175,23 @@ public class JobWorker {
                             + "the lease reaper will reclaim it",
                     claim.jobId(), claim.attemptNumber(), recordingFailure);
         } finally {
+            if (timeoutTask != null) {
+                timeoutTask.cancel(false);
+            }
+            // An interrupt used to stop a timed-out handler must not leak into
+            // the next task that reuses this pool thread.
+            Thread.interrupted();
             freeSlots.release();
+        }
+    }
+
+    private void recordFailure(ClaimedJob claim, String error) {
+        try {
+            claimService.recordFailure(identity.id(), claim, error);
+        } catch (RuntimeException recordingFailure) {
+            log.error("Failed to record failure of job {} attempt {}; "
+                            + "the lease reaper will reclaim it",
+                    claim.jobId(), claim.attemptNumber(), recordingFailure);
         }
     }
 
@@ -160,6 +204,7 @@ public class JobWorker {
 
     @PreDestroy
     void shutdown() {
+        timeoutScheduler.shutdownNow();
         executionPool.shutdown();
 
         try {

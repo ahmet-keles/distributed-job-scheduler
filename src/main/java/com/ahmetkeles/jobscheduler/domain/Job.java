@@ -76,6 +76,10 @@ public class Job {
     @Column(name = "max_attempts", nullable = false)
     private int maxAttempts;
 
+    /** Optional maximum handler execution time, in seconds. */
+    @Column(name = "timeout_seconds")
+    private Long timeoutSeconds;
+
     /** Identity of the worker holding the current claim; null unless RUNNING. */
     @Column(name = "worker_id", length = 100)
     private String workerId;
@@ -98,7 +102,7 @@ public class Job {
     }
 
     public Job(String type, String payload, Instant scheduledAt, int maxAttempts) {
-        this(type, payload, scheduledAt, maxAttempts, 0);
+        this(type, payload, scheduledAt, maxAttempts, 0, null);
     }
 
     public Job(
@@ -107,6 +111,17 @@ public class Job {
             Instant scheduledAt,
             int maxAttempts,
             int priority
+    ) {
+        this(type, payload, scheduledAt, maxAttempts, priority, null);
+    }
+
+    public Job(
+            String type,
+            String payload,
+            Instant scheduledAt,
+            int maxAttempts,
+            int priority,
+            Long timeoutSeconds
     ) {
         if (type == null || type.isBlank()) {
             throw new IllegalArgumentException("type is required");
@@ -120,6 +135,12 @@ public class Job {
             throw new IllegalArgumentException("maxAttempts must be at least 1");
         }
 
+        if (timeoutSeconds != null
+                && (timeoutSeconds < 1 || timeoutSeconds > 86_400)) {
+            throw new IllegalArgumentException(
+                    "timeoutSeconds must be between 1 and 86400");
+        }
+
         this.id = UUID.randomUUID();
         this.type = type;
         this.payload = payload == null || payload.isBlank() ? "{}" : payload;
@@ -128,6 +149,7 @@ public class Job {
         this.priority = priority;
         this.attempts = 0;
         this.maxAttempts = maxAttempts;
+        this.timeoutSeconds = timeoutSeconds;
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
     }
@@ -327,6 +349,10 @@ public class Job {
 
     public int getMaxAttempts() {
         return maxAttempts;
+    }
+
+    public Long getTimeoutSeconds() {
+        return timeoutSeconds;
     }
 
     public String getWorkerId() {

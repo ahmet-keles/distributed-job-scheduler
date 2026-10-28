@@ -12,6 +12,7 @@ public record ClaimedJob(
         UUID jobId,
         String type,
         String payload,
-        int attemptNumber
+        int attemptNumber,
+        Long timeoutSeconds
 ) {
 }

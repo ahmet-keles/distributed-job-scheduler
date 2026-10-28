@@ -80,7 +80,8 @@ public class JobClaimService {
                     job.getId(),
                     job.getType(),
                     job.getPayload(),
-                    job.getAttempts()
+                    job.getAttempts(),
+                    job.getTimeoutSeconds()
             ));
         }
 
