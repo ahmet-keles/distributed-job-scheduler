@@ -88,6 +88,10 @@ public class Job {
     @Column(name = "lease_expires_at")
     private Instant leaseExpiresAt;
 
+    /** Durable request that the current running attempt should stop. */
+    @Column(name = "cancel_requested", nullable = false)
+    private boolean cancelRequested;
+
     /** Error message of the most recent failed or abandoned attempt. */
     @Column(name = "last_error", columnDefinition = "text")
     private String lastError;
@@ -196,6 +200,7 @@ public class Job {
 
         status = JobStatus.RUNNING;
         attempts++;
+        cancelRequested = false;
         workerId = claimingWorkerId;
         leaseExpiresAt = leaseDeadline;
         updatedAt = Instant.now();
@@ -270,16 +275,47 @@ public class Job {
     }
 
     /**
-     * Cancels a PENDING job. Any other status throws: RUNNING is already on a
-     * worker, and terminal states have nothing left to cancel.
+     * Cancels a PENDING job immediately or requests cooperative cancellation
+     * for a RUNNING attempt. Terminal jobs cannot be cancelled.
      */
     public void cancel() {
-        if (status != JobStatus.PENDING) {
-            throw new JobNotCancellableException(id, status);
+        if (status == JobStatus.PENDING) {
+            status = JobStatus.CANCELLED;
+            updatedAt = Instant.now();
+            return;
         }
 
+        if (status == JobStatus.RUNNING) {
+            cancelRequested = true;
+            updatedAt = Instant.now();
+            return;
+        }
+
+        throw new JobNotCancellableException(id, status);
+    }
+
+    /** Completes a cancellation request for the current, still-owned attempt. */
+    public boolean cancelRunningAttempt(String worker, int attemptNumber) {
+        if (!cancelRequested || !holdsClaim(worker, attemptNumber)) {
+            return false;
+        }
+
+        cancelRequested = false;
         status = JobStatus.CANCELLED;
-        updatedAt = Instant.now();
+        clearClaim();
+        return true;
+    }
+
+    /** Completes a cancellation request when the worker lease has expired. */
+    public void cancelExpiredAttempt() {
+        if (status != JobStatus.RUNNING || !cancelRequested) {
+            throw new IllegalStateException(
+                    "Job " + id + " has no running cancellation request");
+        }
+
+        cancelRequested = false;
+        status = JobStatus.CANCELLED;
+        clearClaim();
     }
 
     /**
@@ -382,6 +418,10 @@ public class Job {
 
     public String getWorkerId() {
         return workerId;
+    }
+
+    public boolean isCancelRequested() {
+        return cancelRequested;
     }
 
     public Instant getLeaseExpiresAt() {

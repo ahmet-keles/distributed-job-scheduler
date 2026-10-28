@@ -135,11 +135,8 @@ public class JobService {
     }
 
     /**
-     * Cancels a PENDING job. The row is locked first, so this serializes with
-     * the workers' claim: whichever transaction wins, the loser sees the
-     * committed status — a claimed job is reported not-cancellable rather
-     * than yanked out from under its worker, and a cancelled job is skipped
-     * by every future claim.
+     * Cancels a PENDING job immediately or flags a RUNNING attempt for the
+     * worker to stop. The row lock serializes this with claim and completion.
      */
     @Transactional
     public Job cancelJob(UUID jobId) {

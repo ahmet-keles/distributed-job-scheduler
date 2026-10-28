@@ -118,6 +118,22 @@ class ExpiredLeaseReaperIntegrationTest extends PostgreSQLIntegrationTest {
     }
 
     @Test
+    void expiredLeaseWithCancellationRequestClosesAsCancelled() throws Exception {
+        UUID jobId = jobService
+                .createJob("noop", "{}", null, null, 3).getId();
+        claimWithExpiredLease("cancelled-worker", jobId);
+        jobService.cancelJob(jobId);
+
+        claimService.requeueExpiredLeases();
+
+        assertEquals(JobStatus.CANCELLED,
+                claimService.loadJob(jobId).getStatus());
+        assertEquals(AttemptOutcome.CANCELLED,
+                attemptRepository.findByJobIdAndAttemptNumber(jobId, 1)
+                        .orElseThrow().getOutcome());
+    }
+
+    @Test
     void lateCompletionAfterReclaimIsDiscarded() throws Exception {
         UUID jobId = jobService
                 .createJob("noop", "{}", null, null, 3).getId();
