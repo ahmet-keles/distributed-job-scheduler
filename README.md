@@ -260,6 +260,47 @@ CI (`.github/workflows/ci.yml`) runs the same suite on every push and pull
 request to `main`, with a fail-fast Docker preflight and retried image
 pre-pulls.
 
+## Load test
+
+The k6 script queues 500 no-op jobs, then uses 20 virtual users to poll their
+status until completion. It reports completed-job throughput through the
+`jobs_completed` counter rate and p95 claim latency through
+`claim_latency_ms`; claim latency is measured from `createdAt` to the first
+attempt's `startedAt`. The Compose `load-test` profile adds three worker
+replicas alongside the scheduler instance (four worker processes total).
+
+Requires Docker; the pinned k6 image supplies the load generator. From the
+repository root, set `POSTGRES_PASSWORD` in your local ignored `.env` as described under
+[Running locally](#running-locally), then run:
+
+```bash
+docker compose -p scheduler-load --profile load-test up -d --build --wait --scale load-worker=3
+docker run --rm \
+  -v "$PWD/load-test:/scripts:ro" \
+  -e BASE_URL=http://host.docker.internal:8080 \
+  -e VUS=20 -e ITERATIONS_PER_VU=25 \
+  grafana/k6:0.57.0 run /scripts/scheduler.js
+docker compose -p scheduler-load --profile load-test down -v
+```
+
+Use a disposable local-only database password for this test stack; do not
+reuse a real credential. Tune `VUS`, `ITERATIONS_PER_VU`, and
+`MAX_WAIT_SECONDS` to change the load. Record the k6 `jobs_completed` rate
+and `claim_latency_ms` p95 together with the machine and worker count when
+comparing runs.
+
+Recorded local result (2026-10-28; Docker Desktop allocated 8 CPUs and
+7.65 GiB memory; 4 worker processes, 4 handler threads each, 1-second poll
+interval, 20 virtual users, 500 no-op jobs):
+
+| Completed-job throughput | p95 claim latency | Outcome |
+|---:|---:|---|
+| 15.79 jobs/s | 28.76 s | 500 succeeded; 0 failed |
+
+This is a local baseline for the no-op handler under a queued burst, not a
+production capacity guarantee. Results depend on the host, Docker allocation,
+and worker configuration.
+
 ## Project layout
 
 ```

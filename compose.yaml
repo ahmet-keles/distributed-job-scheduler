@@ -66,6 +66,26 @@ services:
       retries: 12
       start_period: 30s
 
+  # Extra worker replicas for the repeatable load-test run. The scheduler
+  # service above remains the API endpoint and also runs one worker process.
+  load-worker:
+    build: .
+    restart: unless-stopped
+    profiles: [load-test]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-jobs}
+      POSTGRES_USER: ${POSTGRES_USER:-jobs_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - copy .env.example to .env}
+      APP_WORKER_ENABLED: "true"
+      APP_WORKER_ID: load-test-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - scheduler
+
 volumes:
   postgres_data:
 
