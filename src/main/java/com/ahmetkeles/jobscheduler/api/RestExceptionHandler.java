@@ -2,6 +2,7 @@ package com.ahmetkeles.jobscheduler.api;
 
 import com.ahmetkeles.jobscheduler.domain.JobNotCancellableException;
 import com.ahmetkeles.jobscheduler.domain.JobNotFoundException;
+import com.ahmetkeles.jobscheduler.domain.JobNotRedrivableException;
 import com.ahmetkeles.jobscheduler.domain.ScheduleNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
@@ -30,6 +31,12 @@ public class RestExceptionHandler {
     @ExceptionHandler(JobNotCancellableException.class)
     public ResponseEntity<ApiError> notCancellable(
             JobNotCancellableException exception, HttpServletRequest request) {
+        return error(HttpStatus.CONFLICT, exception.getMessage(), request);
+    }
+
+    @ExceptionHandler(JobNotRedrivableException.class)
+    public ResponseEntity<ApiError> notRedrivable(
+            JobNotRedrivableException exception, HttpServletRequest request) {
         return error(HttpStatus.CONFLICT, exception.getMessage(), request);
     }
 

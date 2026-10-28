@@ -23,6 +23,7 @@ public record JobResponse(
         String workerId,
         Instant leaseExpiresAt,
         String lastError,
+        Instant deadLetteredAt,
         Instant createdAt,
         Instant updatedAt,
         List<JobAttemptResponse> attemptHistory
@@ -44,6 +45,7 @@ public record JobResponse(
                 job.getWorkerId(),
                 job.getLeaseExpiresAt(),
                 job.getLastError(),
+                job.getDeadLetteredAt(),
                 job.getCreatedAt(),
                 job.getUpdatedAt(),
                 attempts == null

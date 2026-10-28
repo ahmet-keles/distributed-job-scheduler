@@ -65,14 +65,26 @@ public class JobController {
             @RequestParam(required = false) JobStatus status,
             @RequestParam(defaultValue = "50") int limit
     ) {
-        if (limit < 1 || limit > MAX_LIST_LIMIT) {
-            throw new IllegalArgumentException(
-                    "limit must be between 1 and " + MAX_LIST_LIMIT);
-        }
+        validateLimit(limit);
 
         return jobService.listJobs(status, limit).stream()
                 .map(JobResponse::summary)
                 .toList();
+    }
+
+    @GetMapping("/dead-letter")
+    public List<JobResponse> listDeadLetterJobs(
+            @RequestParam(defaultValue = "50") int limit
+    ) {
+        validateLimit(limit);
+        return jobService.listDeadLetterJobs(limit).stream()
+                .map(JobResponse::summary)
+                .toList();
+    }
+
+    @PostMapping("/{id}/redrive")
+    public JobResponse redriveJob(@PathVariable UUID id) {
+        return JobResponse.summary(jobService.redriveJob(id));
     }
 
     @PostMapping("/{id}/cancel")
@@ -80,5 +92,12 @@ public class JobController {
         Job job = jobService.cancelJob(id);
 
         return JobResponse.summary(job);
+    }
+
+    private static void validateLimit(int limit) {
+        if (limit < 1 || limit > MAX_LIST_LIMIT) {
+            throw new IllegalArgumentException(
+                    "limit must be between 1 and " + MAX_LIST_LIMIT);
+        }
     }
 }

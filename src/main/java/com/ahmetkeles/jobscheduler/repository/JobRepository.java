@@ -110,6 +110,9 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
 
     List<Job> findByStatusOrderByCreatedAtDesc(JobStatus status, Pageable pageable);
 
+    List<Job> findByDeadLetteredAtIsNotNullOrderByDeadLetteredAtDesc(
+            Pageable pageable);
+
     List<Job> findByScheduleIdOrderByCreatedAtDesc(UUID scheduleId, Pageable pageable);
 
     List<Job> findAllByOrderByCreatedAtDesc(Pageable pageable);
