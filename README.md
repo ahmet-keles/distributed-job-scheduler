@@ -37,6 +37,8 @@ same coordination model — a schedule only materializes ordinary jobs.
 - **Execution history**: one immutable attempt row per execution, including
   attempts written off as `ABANDONED` by crash recovery and `CANCELLED` by
   a user request
+- **WebSocket progress**: clients subscribe to one job and receive its
+  persisted state immediately and whenever that state changes
 - **Job states**: `PENDING → RUNNING → SUCCEEDED | FAILED`, plus `CANCELLED`
   for pending jobs cancelled immediately or running jobs stopped cooperatively
 
@@ -220,6 +222,21 @@ curl -X POST localhost:8080/api/jobs/{id}/redrive
 # A running response stays RUNNING with cancelRequested=true until the worker
 # stops the handler and records the attempt as CANCELLED. Terminal -> 409.
 curl -X POST localhost:8080/api/jobs/{id}/cancel
+```
+
+### WebSocket progress
+
+Connect to `ws://localhost:8080/ws/jobs/{id}` to receive a JSON
+`job.progress` snapshot immediately and again whenever the persisted job
+state changes. Each event includes the job ID, state, attempt counts,
+`cancelRequested`, last error, and update time. The broadcaster polls the
+database every 250 ms by default, so it also observes changes made by another
+scheduler instance. Override this interval with
+`app.progress.broadcast-interval-ms`.
+
+```javascript
+const updates = new WebSocket(`ws://localhost:8080/ws/jobs/${jobId}`);
+updates.onmessage = event => console.log(JSON.parse(event.data));
 ```
 
 Redriving a dead-lettered job makes it due immediately and grants it a fresh
