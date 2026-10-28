@@ -1,0 +1,7 @@
+aws_region        = "us-east-2"
+my_ip             = "203.0.113.10"
+postgres_password = "REPLACE_WITH_A_LONG_RANDOM_VALUE"
+
+# Optional. Defaults to my_ip/32 when omitted.
+# For a temporary public demo only, set this to "0.0.0.0/0" and revert it after.
+# api_allowed_cidr = "0.0.0.0/0"
