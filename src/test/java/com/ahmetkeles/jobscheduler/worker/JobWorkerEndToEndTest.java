@@ -83,6 +83,52 @@ class JobWorkerEndToEndTest {
     }
 
     @Test
+    void aJobThatFinishesBeforeItsTimeoutSucceeds() {
+        UUID jobId = jobService.createJob(
+                "sleep", "{\"millis\": 50}", null, null, 1, 0, 2L
+        ).getId();
+
+        awaitStatus(jobId, JobStatus.SUCCEEDED);
+        assertEquals(1, claimService.loadJob(jobId).getAttempts());
+        assertEquals(AttemptOutcome.SUCCEEDED,
+                attemptRepository.findByJobIdOrderByAttemptNumberAsc(jobId)
+                        .get(0).getOutcome());
+    }
+
+    @Test
+    void aTimedOutJobRetriesAndTimesOutAgain() {
+        UUID jobId = jobService.createJob(
+                "sleep", "{\"millis\": 3000}", null, null, 2, 0, 1L
+        ).getId();
+
+        awaitStatus(jobId, JobStatus.FAILED);
+
+        Job job = claimService.loadJob(jobId);
+        assertEquals(2, job.getAttempts());
+        assertTrue(job.getLastError().contains("timed out after 1 seconds"));
+        List<JobAttempt> history =
+                attemptRepository.findByJobIdOrderByAttemptNumberAsc(jobId);
+        assertEquals(2, history.size());
+        history.forEach(attempt ->
+                assertEquals(AttemptOutcome.FAILED, attempt.getOutcome()));
+    }
+
+    @Test
+    void aTimedOutJobWithNoRetriesEndsTerminallyFailed() {
+        UUID jobId = jobService.createJob(
+                "sleep", "{\"millis\": 3000}", null, null, 1, 0, 1L
+        ).getId();
+
+        awaitStatus(jobId, JobStatus.FAILED);
+        Job job = claimService.loadJob(jobId);
+        assertEquals(1, job.getAttempts());
+        assertTrue(job.getLastError().contains("timed out after 1 seconds"));
+        assertEquals(AttemptOutcome.FAILED,
+                attemptRepository.findByJobIdOrderByAttemptNumberAsc(jobId)
+                        .get(0).getOutcome());
+    }
+
+    @Test
     void aFailingJobIsRetriedAndEndsUpFailedWithFullHistory() {
         UUID jobId = jobService.createJob(
                 "always-fail",

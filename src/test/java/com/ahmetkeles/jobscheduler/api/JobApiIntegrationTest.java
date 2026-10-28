@@ -57,6 +57,30 @@ class JobApiIntegrationTest extends PostgreSQLIntegrationTest {
     }
 
     @Test
+    void createsAJobWithAnExecutionTimeout() throws Exception {
+        mockMvc.perform(post("/api/jobs")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {"type": "noop", "timeoutSeconds": 12}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.timeoutSeconds").value(12));
+    }
+
+    @Test
+    void rejectsInvalidExecutionTimeouts() throws Exception {
+        mockMvc.perform(post("/api/jobs")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"type\":\"noop\",\"timeoutSeconds\":0}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/jobs")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"type\":\"noop\",\"timeoutSeconds\":86401}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void createsADelayedJobScheduledInTheFuture() throws Exception {
         Instant before = Instant.now();
 

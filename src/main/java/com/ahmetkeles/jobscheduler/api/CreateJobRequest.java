@@ -3,6 +3,7 @@ package com.ahmetkeles.jobscheduler.api;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 
@@ -37,7 +38,12 @@ public record CreateJobRequest(
          */
         @Min(-100)
         @Max(100)
-        Integer priority
+        Integer priority,
+
+        /** Optional handler execution limit, in seconds. */
+        @Positive
+        @Max(86_400)
+        Long timeoutSeconds
 ) {
 
     public boolean hasConflictingSchedule() {

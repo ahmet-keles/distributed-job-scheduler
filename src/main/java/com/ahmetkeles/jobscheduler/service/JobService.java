@@ -49,7 +49,8 @@ public class JobService {
             Instant scheduledAt,
             Integer maxAttempts
     ) {
-        return createJob(type, payload, delaySeconds, scheduledAt, maxAttempts, null);
+        return createJob(type, payload, delaySeconds, scheduledAt,
+                maxAttempts, null, null);
     }
 
     /** As above, with a claim-order priority (higher first; null means 0). */
@@ -61,6 +62,21 @@ public class JobService {
             Instant scheduledAt,
             Integer maxAttempts,
             Integer priority
+    ) {
+        return createJob(type, payload, delaySeconds, scheduledAt,
+                maxAttempts, priority, null);
+    }
+
+    /** As above, with an optional per-attempt handler timeout in seconds. */
+    @Transactional
+    public Job createJob(
+            String type,
+            String payload,
+            Long delaySeconds,
+            Instant scheduledAt,
+            Integer maxAttempts,
+            Integer priority,
+            Long timeoutSeconds
     ) {
         Instant runAt;
         if (scheduledAt != null) {
@@ -76,7 +92,8 @@ public class JobService {
                 payload,
                 runAt,
                 maxAttempts == null ? DEFAULT_MAX_ATTEMPTS : maxAttempts,
-                priority == null ? 0 : priority
+                priority == null ? 0 : priority,
+                timeoutSeconds
         );
 
         return jobRepository.save(job);

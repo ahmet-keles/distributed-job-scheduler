@@ -31,6 +31,8 @@ same coordination model — a schedule only materializes ordinary jobs.
   partitioned worker's jobs are re-executed instead of stuck
 - **Bounded retries** with deterministic exponential backoff, ending in a
   terminal `FAILED` state with the last error preserved
+- **Per-job execution timeout** — optionally interrupt an overlong handler
+  and record the attempt as failed through the standard retry policy
 - **Execution history**: one immutable attempt row per execution, including
   attempts written off as `ABANDONED` by crash recovery
 - **Job states**: `PENDING → RUNNING → SUCCEEDED | FAILED`, plus `CANCELLED`
@@ -80,6 +82,10 @@ instance's reaper can recover any other instance's abandoned jobs.
    `SUCCEEDED`, or `FAILED` with the retry policy applied: back to `PENDING`
    at `now + initial·multiplier^(n−1)` (capped) while attempts remain,
    terminal `FAILED` once exhausted.
+   An optional per-job `timeoutSeconds` interrupts an overlong handler and
+   records a failed attempt through this same retry path. Handlers should
+   respond to interruption; a handler that ignores it may continue running,
+   while the attempt-number fence prevents its late result changing job state.
 4. **Heartbeat** — while jobs run, the worker extends the lease of every
    `RUNNING` row it owns whose lease is still live, in one UPDATE, on a
    schedule that startup validation forces to be shorter than the lease. An
@@ -92,7 +98,7 @@ instance's reaper can recover any other instance's abandoned jobs.
 
 | Table | Purpose |
 |---|---|
-| `jobs` | Current state: status, schedule, priority, attempts/max, claim owner + lease, last error, and (for materialized firings) the source schedule + nominal occurrence. CHECK constraints enforce the status/claim invariant at the schema level. |
+| `jobs` | Current state: status, schedule, priority, attempts/max, optional timeout, claim owner + lease, last error, and (for materialized firings) the source schedule + nominal occurrence. CHECK constraints enforce the status/claim invariant at the schema level. |
 | `job_attempts` | Append-only history: one row per started attempt with worker, timestamps, outcome (`SUCCEEDED`/`FAILED`/`ABANDONED`), and error. `UNIQUE (job_id, attempt_number)`. |
 | `schedules` | Recurring definitions: cron (UTC), job template (type, payload, priority, max attempts), enabled flag, and `next_run_at`. A schedule never executes anything itself. |
 
@@ -172,6 +178,11 @@ curl -X POST localhost:8080/api/jobs \
 curl -X POST localhost:8080/api/jobs \
   -H 'Content-Type: application/json' \
   -d '{"type": "always-fail", "maxAttempts": 5}'
+
+# Optional per-attempt timeout (1–86400 seconds); omitted means unlimited
+curl -X POST localhost:8080/api/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "sleep", "payload": "{\"millis\": 30000}", "timeoutSeconds": 10}'
 
 # Priority: higher runs first among due jobs (-100..100, default 0)
 curl -X POST localhost:8080/api/jobs \
