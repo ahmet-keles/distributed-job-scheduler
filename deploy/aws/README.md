@@ -1,7 +1,7 @@
 # AWS EC2 deployment template
 
 This Terraform template provisions one `t4g.small` (ARM64) EC2 instance in
-`us-east-1`, using the account's default VPC and one of its subnets. Amazon
+`us-east-2`, using the account's default VPC and one of its subnets. Amazon
 Linux 2023 installs Docker and Docker Compose, then starts this repository's
 `compose.yaml` (scheduler and PostgreSQL). It creates one security group:
 SSH is limited to `my_ip`, and API port 8080 defaults to the same `my_ip/32`
@@ -13,7 +13,7 @@ automated database backup. Use it for a small demo, not production workloads.
 
 - Terraform 1.6 or newer, AWS CLI, and an AWS CLI profile with permission to
   create EC2 instances, security groups, and read the public SSM AMI parameter.
-- An initialized default VPC with a public subnet in `us-east-1`.
+- An initialized default VPC with a public subnet in `us-east-2`.
 - Your public IPv4 address and a long random PostgreSQL password.
 - No local Java or Docker installation is needed; the instance clones the
   public GitHub repository and builds the scheduler image on first boot.
@@ -111,9 +111,9 @@ instance starts again. From this directory, use:
 
 ```sh
 INSTANCE_ID="$(terraform output -raw instance_id)"
-aws ec2 stop-instances --region us-east-1 --instance-ids "$INSTANCE_ID"
-aws ec2 start-instances --region us-east-1 --instance-ids "$INSTANCE_ID"
-aws ec2 describe-instances --region us-east-1 --instance-ids "$INSTANCE_ID" \
+aws ec2 stop-instances --region us-east-2 --instance-ids "$INSTANCE_ID"
+aws ec2 start-instances --region us-east-2 --instance-ids "$INSTANCE_ID"
+aws ec2 describe-instances --region us-east-2 --instance-ids "$INSTANCE_ID" \
   --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
 ```
 
@@ -125,11 +125,12 @@ before destroying if you need to keep it.
 
 ## Monthly cost estimate
 
-At 730 hours/month, estimate about **$17.51/month** while running continuously:
+At 730 hours/month, estimate about **$19.70/month** while running continuously:
 approximately $12.26 for Linux On-Demand `t4g.small` ($0.0168/hour), $1.60
-for 20 GB gp3 ($0.08/GB-month), and $3.65 for one public IPv4 address
-($0.005/hour). This excludes data transfer, snapshots, taxes, and any surplus
+for 20 GB gp3 ($0.08/GB-month), and $5.84 for one public IPv4 address
+($0.008/hour). This excludes data transfer, snapshots, taxes, and any surplus
 T-family CPU credits. Stopping saves the instance charge; the EBS volume
 continues to cost about $1.60/month. Prices vary; verify current rates with
 the [AWS EC2 pricing](https://aws.amazon.com/ec2/pricing/on-demand/) and
-[EBS pricing](https://aws.amazon.com/ebs/pricing/) pages before applying.
+[EBS pricing](https://aws.amazon.com/ebs/pricing/) pages and
+[VPC pricing](https://aws.amazon.com/vpc/pricing/) before applying.

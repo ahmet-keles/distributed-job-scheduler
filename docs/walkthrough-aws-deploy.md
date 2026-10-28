@@ -1,6 +1,6 @@
 # AWS deployment walkthrough
 
-1. Terraform selects the account's default VPC and an available subnet in `us-east-1`.
+1. Terraform selects the account's default VPC and an available subnet in `us-east-2`.
 2. It reads the current Amazon Linux 2023 ARM64 AMI ID from the public SSM parameter.
 3. The instance type is one `t4g.small`, with a 20 GB encrypted gp3 root disk.
 4. One security group allows SSH from the configured `my_ip` only.
